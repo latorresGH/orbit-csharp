@@ -8,7 +8,7 @@ namespace OrbIT.Infrastructure.Models;
 /// y los labels UPPER_SNAKE ("EN_CAMINO"), que coinciden 1:1 con los miembros CLR,
 /// por lo que no se debe aplicar la traducción snake_case por defecto de Npgsql.
 /// </summary>
-internal sealed class ExactNameTranslator : INpgsqlNameTranslator
+public sealed class ExactNameTranslator : INpgsqlNameTranslator
 {
     public string TranslateTypeName(string clrName) => clrName;
 
