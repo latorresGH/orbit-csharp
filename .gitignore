@@ -1,0 +1,63 @@
+## ── Build outputs ────────────────────────────────────────────────
+bin/
+obj/
+out/
+*.dll
+*.pdb
+
+## ── Visual Studio ────────────────────────────────────────────────
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## ── Rider / VS Code ──────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+## ── Logs ─────────────────────────────────────────────────────────
+*.log
+logs/
+
+## ── Secrets / configuración local — NUNCA subir ─────────────────
+appsettings.Development.json
+appsettings.Local.json
+appsettings.Production.json
+*.env
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# User secrets de .NET
+secrets.json
+
+## ── Certificados / keys ──────────────────────────────────────────
+*.pfx
+*.p12
+*.key
+*.pem
+
+## ── Test results ─────────────────────────────────────────────────
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+## ── NuGet ────────────────────────────────────────────────────────
+*.nupkg
+**/packages/*
+!**/packages/build/
+.nuget/
+
+## ── OS junk ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## ── Publish output ───────────────────────────────────────────────
+publish/
+PublishProfiles/
+*.publishsettings

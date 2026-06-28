@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="OrbIT.Api/OrbIT.Api.csproj" />
+  <Project Path="OrbIT.Application/OrbIT.Application.csproj" />
+  <Project Path="OrbIT.Domain/OrbIT.Domain.csproj" />
+  <Project Path="OrbIT.Infrastructure/OrbIT.Infrastructure.csproj" />
+</Solution>
