@@ -1,12 +1,21 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using OrbIT.Api.MultiTenancy;
 using OrbIT.Domain.Enums;
+using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// ── Multi-tenancy ─────────────────────────────────────────────────────────
+// El tenant (negocio) activo se resuelve por request desde el HttpContext y se
+// inyecta en el OrbitDbContext, que aplica global query filters por NegocioId.
+// Scoped: una resolución de tenant por request, alineada con el scope del DbContext.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<ITenantProvider, HttpTenantProvider>();
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
@@ -38,7 +47,7 @@ dataSourceBuilder
 var dataSource = dataSourceBuilder.Build();
 
 builder.Services.AddDbContext<OrbitDbContext>(options =>
-    options.UseNpgsql(dataSource));
+    options.UseNpgsql(dataSource, npgsql => npgsql.MapOrbitEnums()));
 
 var app = builder.Build();
 
