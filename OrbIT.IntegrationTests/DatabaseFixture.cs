@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
@@ -56,6 +57,9 @@ public sealed class DatabaseFixture : IAsyncLifetime
     {
         var options = new DbContextOptionsBuilder<OrbitDbContext>()
             .UseNpgsql(_dataSource, npgsql => npgsql.MapOrbitEnums())
+            // Misma razón que en Program.cs: el guard de EF de "muchos IServiceProvider
+            // internos" es global al proceso y lo cruzan los varios setups EF de la suite.
+            .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning))
             .Options;
         return new OrbitDbContext(options, new SettableTenantProvider(negocioId));
     }

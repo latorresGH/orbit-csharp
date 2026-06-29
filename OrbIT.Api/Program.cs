@@ -3,6 +3,7 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using OrbIT.Api.MultiTenancy;
@@ -53,7 +54,14 @@ dataSourceBuilder
 var dataSource = dataSourceBuilder.Build();
 
 builder.Services.AddDbContext<OrbitDbContext>(options =>
-    options.UseNpgsql(dataSource, npgsql => npgsql.MapOrbitEnums()));
+    options
+        .UseNpgsql(dataSource, npgsql => npgsql.MapOrbitEnums())
+        // En los procesos de test corren varios hosts/DataSources en paralelo (cada
+        // WebApplicationFactory arma el suyo), y el contador de EF de "IServiceProvider
+        // internos creados" es global al proceso, así que cruza el umbral de 20 y el
+        // warning se escala a excepción. En producción hay un único host: este warning
+        // no aplica nunca, por eso lo silenciamos sin perder señal real.
+        .ConfigureWarnings(w => w.Ignore(CoreEventId.ManyServiceProvidersCreatedWarning)));
 
 // ── Auth: JWT + servicios ─────────────────────────────────────────────────
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
