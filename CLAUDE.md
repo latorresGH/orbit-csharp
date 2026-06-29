@@ -33,6 +33,18 @@ Para cada controller/service nuevo que se implemente:
 - appsettings.json (commiteado, placeholders) + appsettings.Development.json (gitignoreado, valores reales).
 - BCrypt work factor 10, JWT con cookies HttpOnly + SameSite=Lax, refresh diferenciado por rol (7 días ADMIN/SUPERADMIN, 12h TRABAJADOR/DELIVERY).
 
+## Endpoints públicos (acceso por slug sin JWT)
+
+Algunos endpoints son del **menú público** (storefront): los consume un cliente final sin login. En NestJS esto era `@Public() + @UseGuards(OptionalJwtGuard)` con un `?negocio=slug`. El equivalente fijo en este proyecto es el atributo **`[AllowAnonymousWithTenant]`** (en `OrbIT.Api/MultiTenancy/`).
+
+Cómo funciona el mecanismo (4 piezas, ya construidas):
+- `TenantResolutionContext` (scoped): holder del tenant resuelto fuera de banda.
+- `HttpTenantProvider`: resuelve `NegocioId` en orden **holder (slug) → claim → header X-Negocio-Id**.
+- `ResolveTenantBySlugFilter` (resource filter): si hay sesión usa el claim; si no, resuelve el negocio por `?negocio=slug` (único `IgnoreQueryFilters` del flujo) y lo deja en el holder; sin claim ni slug → 400; slug inexistente → 404.
+- `AllowAnonymousWithTenantAttribute`: combina `IAllowAnonymous` (desactiva el `[Authorize]` del controller para esa acción) + `IFilterFactory` (engancha el filtro).
+
+**Regla para cualquier endpoint público futuro** (menú de Productos, Extras, Ofertas, Config, Barrios, Categorías-para-menú): marcar la acción con `[AllowAnonymousWithTenant]` y escribir la query normal. El Global Query Filter ya queda scopeado al negocio correcto (por claim o por slug) — **no hace falta `IgnoreQueryFilters` ni resolución de tenant en el controller**. No replicar el chequeo manual de slug en cada controller; el atributo es la única vía.
+
 ## Pendiente conocido (no implementar todavía salvo que se pida explícitamente)
 
 - Stamping automático de NegocioId vía override de SaveChanges (hoy es manual por controller).

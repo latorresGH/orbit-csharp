@@ -23,6 +23,11 @@ builder.Services.AddControllers();
 // Scoped: una resolución de tenant por request, alineada con el scope del DbContext.
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ITenantProvider, HttpTenantProvider>();
+// Tenant resuelto fuera de banda (slug) para endpoints públicos: un holder scoped que el
+// HttpTenantProvider consulta primero, y el resource filter que lo completa. Ver
+// [AllowAnonymousWithTenant] y la sección "Endpoints públicos" de CLAUDE.md.
+builder.Services.AddScoped<TenantResolutionContext>();
+builder.Services.AddScoped<ResolveTenantBySlugFilter>();
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
