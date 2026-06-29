@@ -345,9 +345,9 @@ public partial class OrbitDbContext : DbContext
                 .HasColumnType("timestamp(3) without time zone")
                 .HasColumnName("createdAt");
             entity.Property(e => e.Descripcion).HasColumnName("descripcion");
-            entity.Property(e => e.MaxSalsasGratis)
+            entity.Property(e => e.MaxAderezosGratis)
                 .HasDefaultValue(2)
-                .HasColumnName("maxSalsasGratis");
+                .HasColumnName("maxAderezosGratis");
             entity.Property(e => e.NegocioId).HasColumnName("negocioId");
             entity.Property(e => e.Nombre).HasColumnName("nombre");
             entity.Property(e => e.Orden).HasColumnName("orden");
@@ -1332,9 +1332,9 @@ public partial class OrbitDbContext : DbContext
             entity.Property(e => e.EsIncluido)
                 .HasDefaultValue(true)
                 .HasColumnName("esIncluido");
-            entity.Property(e => e.MaxSeleccionables)
+            entity.Property(e => e.MaxExtrasGratis)
                 .HasDefaultValue(3)
-                .HasColumnName("maxSeleccionables");
+                .HasColumnName("maxExtrasGratis");
             entity.Property(e => e.NegocioId).HasColumnName("negocioId");
             entity.Property(e => e.Nombre).HasColumnName("nombre");
             entity.Property(e => e.Orden).HasColumnName("orden");

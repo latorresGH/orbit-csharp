@@ -9,7 +9,7 @@ public partial class ToppingGrupo
 
     public string Nombre { get; set; } = null!;
 
-    public int MaxSeleccionables { get; set; }
+    public int MaxExtrasGratis { get; set; }
 
     public bool EsIncluido { get; set; }
 

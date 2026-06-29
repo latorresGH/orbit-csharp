@@ -19,7 +19,7 @@ public partial class Categorium
 
     public int Orden { get; set; }
 
-    public int MaxSalsasGratis { get; set; }
+    public int MaxAderezosGratis { get; set; }
 
     public string NegocioId { get; set; } = null!;
 
