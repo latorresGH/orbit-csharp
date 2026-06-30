@@ -9,6 +9,8 @@ using Npgsql;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
+using OrbIT.Application.CodigosDescuento;
+using OrbIT.Application.Ofertas;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
@@ -78,6 +80,12 @@ builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 // Servicio transversal de AuditLog, scoped al request (comparte el DbContext del
 // controller que lo inyecta). Primer consumidor: ProductoController (CAMBIO_PRECIO).
 builder.Services.AddScoped<IAuditLogService, AuditLogService>();
+
+// ── Ofertas y códigos de descuento ───────────────────────────────────────
+// Servicios reutilizables (scoped, comparten el DbContext del request) que consumen los endpoints
+// públicos de cálculo/validación y, más adelante, crearPedido del PedidosController.
+builder.Services.AddScoped<IOfertasCalculatorService, OfertasCalculatorService>();
+builder.Services.AddScoped<ICodigosDescuentoService, CodigosDescuentoService>();
 
 var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
     ?? throw new InvalidOperationException(
