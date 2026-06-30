@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using OrbIT.Api.MultiTenancy;
+using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
@@ -72,6 +73,11 @@ builder.Services.AddDbContext<OrbitDbContext>(options =>
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+
+// ── Auditoría ─────────────────────────────────────────────────────────────
+// Servicio transversal de AuditLog, scoped al request (comparte el DbContext del
+// controller que lo inyecta). Primer consumidor: ProductoController (CAMBIO_PRECIO).
+builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 
 var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
     ?? throw new InvalidOperationException(

@@ -29,7 +29,11 @@ public partial class Producto
 
     public bool EsVegetariano { get; set; }
 
-    public string? ToppingGruposCompatibles { get; set; }
+    // Tweak post-scaffold (decisión A): la columna jsonb `toppingGruposCompatibles` se mapea a una
+    // List<string> tipada vía ValueConverter + ValueComparer configurados en OnModelCreatingPartial
+    // (OrbitDbContext.MultiTenant.cs), en vez del string crudo que emite el scaffold. Si se vuelve a
+    // scaffoldear, reaplicar este cambio de tipo.
+    public List<string> ToppingGruposCompatibles { get; set; } = new();
 
     public bool PermitirMediaMedia { get; set; }
 

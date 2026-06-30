@@ -1,4 +1,7 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrbIT.Domain.MultiTenancy;
 
 namespace OrbIT.Infrastructure.Models;
@@ -73,5 +76,22 @@ public partial class OrbitDbContext
         modelBuilder.Entity<ToppingGrupo>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<Turno>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<User>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
+
+        // ── ToppingGruposCompatibles: List<string> tipada sobre la columna jsonb (decisión A) ──
+        // El scaffold mapea esta columna como string crudo; acá la convertimos a List<string> con
+        // serialización JSON. El ValueComparer es obligatorio: sin él EF no detecta mutaciones de la
+        // lista (tipo de referencia mutable) y los snapshots de change-tracking quedan compartidos.
+        var stringListConverter = new ValueConverter<List<string>, string>(
+            v => JsonSerializer.Serialize(v ?? new List<string>(), (JsonSerializerOptions?)null),
+            v => string.IsNullOrEmpty(v)
+                ? new List<string>()
+                : JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>());
+        var stringListComparer = new ValueComparer<List<string>>(
+            (a, b) => (a ?? new List<string>()).SequenceEqual(b ?? new List<string>()),
+            v => v == null ? 0 : v.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())),
+            v => v.ToList());
+        modelBuilder.Entity<Producto>().Property(p => p.ToppingGruposCompatibles)
+            .HasColumnType("jsonb")
+            .HasConversion(stringListConverter, stringListComparer);
     }
 }
