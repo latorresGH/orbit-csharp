@@ -9,10 +9,12 @@ using Npgsql;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
+using OrbIT.Application.Caja;
 using OrbIT.Application.CodigosDescuento;
 using OrbIT.Application.Demora;
 using OrbIT.Application.Ofertas;
 using OrbIT.Application.Pedidos;
+using OrbIT.Application.Turnos;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
@@ -94,6 +96,13 @@ builder.Services.AddScoped<ICodigosDescuentoService, CodigosDescuentoService>();
 // Tanda A (best-effort, ver IDemoraService).
 builder.Services.AddScoped<IDemoraService, DemoraServiceStub>();
 builder.Services.AddScoped<IPedidoService, PedidoService>();
+
+// ── Caja y Turnos ─────────────────────────────────────────────────────────
+// TurnoService orquesta abrir + cerrar (transaccional, con cálculo de ventas/efectivo esperado); el turno es
+// GLOBAL por negocio (un único activo, no uno por empleado). CajaService orquesta el registro de pago de un
+// pedido y el batch (transaccional). Ambos son scoped y comparten el DbContext del request.
+builder.Services.AddScoped<ITurnoService, TurnoService>();
+builder.Services.AddScoped<ICajaService, CajaService>();
 
 var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
     ?? throw new InvalidOperationException(
