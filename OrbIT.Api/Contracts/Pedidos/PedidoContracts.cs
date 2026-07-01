@@ -184,3 +184,69 @@ public sealed record TrackingResponse(
     IReadOnlyList<TrackingDetalleResponse> Detalles);
 
 public sealed record ImprimirResponse(int Marcados);
+
+// ── Tanda B: reporting / stats / historial (solo lectura) ──────────────────────
+
+/// <summary>Sobre común de paginación server-side. Espeja el <c>{ data, total, page, totalPages }</c> del NestJS.</summary>
+public sealed record PaginatedResponse<T>(IReadOnlyList<T> Data, int Total, int Page, int TotalPages);
+
+/// <summary>
+/// Fila del historial: projection liviana (no la entidad completa con triple include del NestJS). Los datos
+/// pesados (aderezos, media-media, movimientos de caja) se piden en <c>GET /pedidos/{id}</c> al abrir el detalle.
+/// </summary>
+public sealed record HistorialPedidoResponse(
+    string Id,
+    TipoPedido Tipo,
+    EstadoPedido Estado,
+    EstadoPago EstadoPago,
+    MetodoPago? MetodoPago,
+    double Total,
+    double CostoEnvio,
+    string? NombreCliente,
+    string? ApellidoCliente,
+    string? NumeroCliente,
+    string? Direccion,
+    string? RepartidorId,
+    string? RepartidorNombre,
+    bool CuentaAbierta,
+    DateTime CreatedAt,
+    IReadOnlyList<HistorialDetalleResponse> Detalles);
+
+public sealed record HistorialDetalleResponse(
+    string Id,
+    string? NombreProducto,
+    int Cantidad,
+    double PrecioUnitario,
+    double Subtotal);
+
+// stats
+public sealed record StatsResponse(
+    IReadOnlyList<StatHora> PorHora,
+    IReadOnlyList<StatTipo> PorTipo,
+    IReadOnlyList<StatMotivo> Cancelaciones,
+    IReadOnlyList<StatRepartidor> Repartidores);
+
+public sealed record StatHora(int Hora, int Count);
+public sealed record StatTipo(TipoPedido Tipo, int Count);
+public sealed record StatMotivo(string Motivo, int Count);
+public sealed record StatRepartidor(string Nombre, int Count);
+
+// stats/cocina
+public sealed record StatsCocinaResponse(
+    IReadOnlyList<CocinaItem> ExtrasTop,
+    IReadOnlyList<CocinaItem> AderezosTop);
+
+public sealed record CocinaItem(string Nombre, int Cantidad);
+
+// reporte
+public sealed record ReporteResponse(
+    double TotalFacturado,
+    int TotalPedidos,
+    double Promedio,
+    double Efectivo,
+    double Transferencia,
+    IReadOnlyList<ReporteDia> PorDia,
+    IReadOnlyList<ReporteProducto> TopProductos);
+
+public sealed record ReporteDia(string Fecha, int Pedidos, double Total);
+public sealed record ReporteProducto(string Nombre, int Cantidad, double Total);

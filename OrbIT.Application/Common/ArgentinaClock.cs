@@ -24,6 +24,22 @@ public static class ArgentinaClock
     /// <summary>Hora local en formato <c>"HH:mm"</c> (para comparar contra <c>horaInicio/horaFin</c> de la oferta).</summary>
     public static string HoraHhMm(DateTime local) => local.ToString("HH:mm");
 
+    /// <summary>
+    /// Convierte un instante UTC (así se guarda <c>createdAt</c> en la DB: <c>DateTime.UtcNow</c> con
+    /// <c>Kind=Unspecified</c>) a hora de pared de Argentina. Equivale al
+    /// <c>toLocaleString('...', { timeZone: 'America/Argentina/Buenos_Aires' })</c> del NestJS.
+    /// </summary>
+    public static DateTime ToLocal(DateTime utc) =>
+        TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), Tz);
+
+    /// <summary>
+    /// Convierte una hora de pared de Argentina a instante UTC (<c>Kind=Unspecified</c>, comparable contra
+    /// <c>createdAt</c>). Reemplaza el truco de NestJS de concatenar <c>+ 'T00:00:00.000-03:00'</c> para
+    /// armar los límites <c>desde</c>/<c>hasta</c> de los filtros de fecha.
+    /// </summary>
+    public static DateTime ToUtc(DateTime local) =>
+        DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), Tz), DateTimeKind.Unspecified);
+
     private static TimeZoneInfo ResolveTimeZone()
     {
         foreach (var id in new[] { "America/Argentina/Buenos_Aires", "Argentina Standard Time" })

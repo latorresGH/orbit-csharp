@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using OrbIT.Api.Contracts.Pedidos;
 using OrbIT.Api.MultiTenancy;
+using OrbIT.Application.Common;
 using OrbIT.Application.Pedidos;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
@@ -20,7 +21,9 @@ namespace OrbIT.Api.Controllers;
 ///
 /// Tenant: todo va por los Global Query Filters salvo <see cref="Tracking"/> (público total, sin tenant,
 /// con <c>IgnoreQueryFilters</c>) y <see cref="Crear"/> (público de menú vía
-/// <see cref="AllowAnonymousWithTenantAttribute"/>). Reporting/stats/historial son Tanda B.
+/// <see cref="AllowAnonymousWithTenantAttribute"/>). El reporting/stats/historial de Tanda B
+/// (<see cref="Historial"/>, <see cref="Stats"/>, <see cref="StatsCocina"/>, <see cref="Reporte"/>) es de
+/// solo lectura: projections server-side, GroupBy en Postgres y una query jsonb cruda para los extras.
 /// </summary>
 [ApiController]
 [Route("pedidos")]
@@ -144,6 +147,238 @@ public sealed class PedidosController : ControllerBase
             .OrderBy(p => p.CreatedAt)
             .ToListAsync();
         return Ok(pedidos.Select(MapPedido));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // Reporting / stats / historial (Tanda B — solo lectura)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /// <summary>
+    /// Historial paginado (offset). Filtros opcionales: rango de fechas (AR -03:00), tipo, estado y búsqueda
+    /// libre (ILIKE sobre nombre/apellido/número/dirección/id). Projection liviana a DTO en vez de la entidad
+    /// completa con triple include del NestJS.
+    /// </summary>
+    [HttpGet("historial")]
+    [Authorize(Roles = "ADMIN,TRABAJADOR")]
+    public async Task<IActionResult> Historial(
+        [FromQuery] string? desde = null,
+        [FromQuery] string? hasta = null,
+        [FromQuery] int? page = null,
+        [FromQuery] int? limit = null,
+        [FromQuery] TipoPedido? tipo = null,
+        [FromQuery] EstadoPedido? estado = null,
+        [FromQuery] string? busqueda = null)
+    {
+        var pageNum = page is > 0 ? page.Value : 1;
+        var lim = Math.Clamp(limit ?? 50, 1, 200);
+
+        var query = _db.Pedidos.AsNoTracking().AsQueryable();
+        if (DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
+        if (HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
+        if (tipo is { } t) query = query.Where(p => p.Tipo == t);
+        if (estado is { } e) query = query.Where(p => p.Estado == e);
+
+        if (!string.IsNullOrWhiteSpace(busqueda))
+        {
+            var q = busqueda.Trim();
+            if (q.Length > 100) q = q[..100];
+            var pattern = "%" + EscapeLike(q) + "%";
+            query = query.Where(p =>
+                EF.Functions.ILike(p.NombreCliente!, pattern, "\\") ||
+                EF.Functions.ILike(p.ApellidoCliente!, pattern, "\\") ||
+                EF.Functions.ILike(p.NumeroCliente!, pattern, "\\") ||
+                EF.Functions.ILike(p.Direccion!, pattern, "\\") ||
+                EF.Functions.ILike(p.Id, pattern, "\\"));
+        }
+
+        var total = await query.CountAsync();
+        var data = await query
+            .OrderByDescending(p => p.CreatedAt)
+            .Skip((pageNum - 1) * lim)
+            .Take(lim)
+            .Select(p => new HistorialPedidoResponse(
+                p.Id, p.Tipo, p.Estado, p.EstadoPago, p.MetodoPago, p.Total, p.CostoEnvio,
+                p.NombreCliente, p.ApellidoCliente, p.NumeroCliente, p.Direccion,
+                p.RepartidorId, p.Repartidor != null ? p.Repartidor.Nombre : null,
+                p.CuentaAbierta, p.CreatedAt,
+                p.PedidoDetalles.Select(dt => new HistorialDetalleResponse(
+                    dt.Id, dt.Producto.Nombre, dt.Cantidad, dt.PrecioUnitario, dt.Subtotal)).ToList()))
+            .ToListAsync();
+
+        var totalPages = (int)Math.Ceiling(total / (double)lim);
+        return Ok(new PaginatedResponse<HistorialPedidoResponse>(data, total, pageNum, totalPages));
+    }
+
+    /// <summary>
+    /// Estadísticas operativas del período: pedidos por hora (bucket en hora AR), por tipo, top-5 motivos de
+    /// cancelación y top-10 repartidores. Los conteos por tipo/repartidor se agregan con GroupBy en Postgres
+    /// (mejora sobre el NestJS, que los contaba en memoria con findMany + Map).
+    /// </summary>
+    [HttpGet("stats")]
+    [Authorize(Roles = "ADMIN,TRABAJADOR")]
+    public async Task<IActionResult> Stats([FromQuery] string? desde = null, [FromQuery] string? hasta = null)
+    {
+        var baseQuery = _db.Pedidos.AsNoTracking().AsQueryable();
+        if (DesdeArUtc(desde) is { } d) baseQuery = baseQuery.Where(p => p.CreatedAt >= d);
+        if (HastaArUtc(hasta) is { } h) baseQuery = baseQuery.Where(p => p.CreatedAt <= h);
+
+        // porHora: hay que llevar cada createdAt (UTC) a hora AR, así que se traen sólo las fechas y se
+        // bucketean en memoria (igual que el NestJS: la conversión de zona no es trivial en SQL).
+        var fechas = await baseQuery.Select(p => p.CreatedAt).ToListAsync();
+        var counts = new int[24];
+        foreach (var f in fechas) counts[ArgentinaClock.ToLocal(f).Hour]++;
+        var porHora = Enumerable.Range(0, 24)
+            .Where(hora => counts[hora] > 0)
+            .Select(hora => new StatHora(hora, counts[hora]))
+            .ToList();
+
+        // porTipo: GroupBy server-side.
+        var porTipo = await baseQuery
+            .GroupBy(p => p.Tipo)
+            .Select(g => new StatTipo(g.Key, g.Count()))
+            .ToListAsync();
+
+        // cancelaciones: el conteo por motivo crudo se hace en Postgres; la normalización JS
+        // (trim → 'Sin motivo' → substring(0,22) → merge) es una post-agregación en memoria sobre pocas filas.
+        var canceladosRaw = await baseQuery
+            .Where(p => p.Estado == EstadoPedido.CANCELADO)
+            .GroupBy(p => p.MotivoCancelacion)
+            .Select(g => new { Motivo = g.Key, Count = g.Count() })
+            .ToListAsync();
+        var motivos = new Dictionary<string, int>();
+        foreach (var r in canceladosRaw)
+        {
+            var m = string.IsNullOrWhiteSpace(r.Motivo) ? "Sin motivo" : r.Motivo.Trim();
+            if (m.Length > 22) m = m[..22];
+            motivos[m] = motivos.GetValueOrDefault(m) + r.Count;
+        }
+        var cancelaciones = motivos
+            .OrderByDescending(kv => kv.Value)
+            .Take(5)
+            .Select(kv => new StatMotivo(kv.Key, kv.Value))
+            .ToList();
+
+        // repartidores: GroupBy server-side por id; los nombres se resuelven en un segundo query y se
+        // reensamblan preservando el orden por conteo (evita GroupBy sobre columna de navegación).
+        var repRaw = await baseQuery
+            .Where(p => p.Tipo == TipoPedido.DELIVERY && p.Estado == EstadoPedido.ENTREGADO && p.RepartidorId != null)
+            .GroupBy(p => p.RepartidorId!)
+            .Select(g => new { Id = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .Take(10)
+            .ToListAsync();
+        var ids = repRaw.Select(x => x.Id).ToList();
+        var nombres = await _db.Users.AsNoTracking()
+            .Where(u => ids.Contains(u.Id))
+            .Select(u => new { u.Id, u.Nombre })
+            .ToDictionaryAsync(u => u.Id, u => u.Nombre);
+        var repartidores = repRaw
+            .Select(x => new StatRepartidor(nombres.GetValueOrDefault(x.Id) ?? "", x.Count))
+            .ToList();
+
+        return Ok(new StatsResponse(porHora, porTipo, cancelaciones, repartidores));
+    }
+
+    /// <summary>
+    /// Estadísticas de cocina: extras (snapshot jsonb) y aderezos (M:N) más pedidos del período.
+    /// Los extras se agregan con una query jsonb cruda en Postgres (<c>jsonb_array_elements</c> + GROUP BY),
+    /// la mejora central de la tanda: evita traer todos los snapshots a memoria. Los aderezos se agregan con
+    /// SelectMany + GroupBy server-side sobre la relación M:N.
+    /// </summary>
+    [HttpGet("stats/cocina")]
+    [Authorize(Roles = "ADMIN,TRABAJADOR")]
+    public async Task<IActionResult> StatsCocina([FromQuery] string? desde = null, [FromQuery] string? hasta = null)
+    {
+        var negocioId = _tenant.NegocioId;
+        if (string.IsNullOrEmpty(negocioId))
+        {
+            return Forbid();
+        }
+
+        var d = DesdeArUtc(desde);
+        var h = HastaArUtc(hasta);
+
+        var extrasTop = await ExtrasTopAsync(negocioId, d, h);
+
+        var detalles = _db.PedidoDetalles.AsNoTracking().AsQueryable();
+        if (d is { } dd) detalles = detalles.Where(x => x.Pedido.CreatedAt >= dd);
+        if (h is { } hh) detalles = detalles.Where(x => x.Pedido.CreatedAt <= hh);
+        var aderezosRaw = await detalles
+            .SelectMany(x => x.As)
+            .GroupBy(a => a.Nombre)
+            .Select(g => new { Nombre = g.Key, Cantidad = g.Count() })
+            .OrderByDescending(x => x.Cantidad)
+            .ThenBy(x => x.Nombre)
+            .Take(10)
+            .ToListAsync();
+        var aderezosTop = aderezosRaw.Select(x => new CocinaItem(x.Nombre, x.Cantidad)).ToList();
+
+        return Ok(new StatsCocinaResponse(extrasTop, aderezosTop));
+    }
+
+    /// <summary>
+    /// Reporte financiero del período: sólo pedidos <see cref="EstadoPedido.ENTREGADO"/>. Devuelve total
+    /// facturado, cantidad, promedio, corte efectivo/transferencia, desglose por día (AR) y top-10 productos.
+    /// </summary>
+    [HttpGet("reporte")]
+    [Authorize(Roles = "ADMIN")]
+    public async Task<IActionResult> Reporte([FromQuery] string? desde = null, [FromQuery] string? hasta = null)
+    {
+        // NestJS usaba UTC crudo acá (new Date(desde) sin offset + hasta con sufijo 'Z'), inconsistente con
+        // historial/stats/cocina que usan -03:00. Casi seguro un bug: unificado a AR (-03:00) para todo Tanda B.
+        var query = _db.Pedidos.AsNoTracking().Where(p => p.Estado == EstadoPedido.ENTREGADO);
+        if (DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
+        if (HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
+
+        var pedidos = await query
+            .OrderBy(p => p.CreatedAt)
+            .Select(p => new
+            {
+                p.Total,
+                p.MetodoPago,
+                p.CreatedAt,
+                Detalles = p.PedidoDetalles.Select(dt => new
+                {
+                    Nombre = dt.Producto.Nombre,
+                    dt.Cantidad,
+                    dt.Subtotal,
+                }).ToList(),
+            })
+            .ToListAsync();
+
+        double totalFacturado = 0, efectivo = 0, transferencia = 0;
+        var porDia = new Dictionary<string, (int Pedidos, double Total)>();
+        var porProducto = new Dictionary<string, (int Cantidad, double Total)>();
+
+        foreach (var p in pedidos)
+        {
+            totalFacturado += p.Total;
+            if (p.MetodoPago == MetodoPago.EFECTIVO) efectivo += p.Total;
+            if (p.MetodoPago == MetodoPago.TRANSFERENCIA) transferencia += p.Total;
+
+            var dia = ArgentinaClock.ToLocal(p.CreatedAt).ToString("yyyy-MM-dd");
+            var acc = porDia.GetValueOrDefault(dia);
+            porDia[dia] = (acc.Pedidos + 1, acc.Total + p.Total);
+
+            foreach (var dt in p.Detalles)
+            {
+                var nombre = string.IsNullOrEmpty(dt.Nombre) ? "Desconocido" : dt.Nombre;
+                var pp = porProducto.GetValueOrDefault(nombre);
+                porProducto[nombre] = (pp.Cantidad + dt.Cantidad, pp.Total + dt.Subtotal);
+            }
+        }
+
+        var response = new ReporteResponse(
+            totalFacturado,
+            pedidos.Count,
+            pedidos.Count > 0 ? totalFacturado / pedidos.Count : 0,
+            efectivo,
+            transferencia,
+            porDia.OrderBy(kv => kv.Key).Select(kv => new ReporteDia(kv.Key, kv.Value.Pedidos, kv.Value.Total)).ToList(),
+            porProducto.OrderByDescending(kv => kv.Value.Cantidad).Take(10)
+                .Select(kv => new ReporteProducto(kv.Key, kv.Value.Cantidad, kv.Value.Total)).ToList());
+
+        return Ok(response);
     }
 
     [HttpGet("{id}/tracking")]
@@ -467,6 +702,56 @@ public sealed class PedidosController : ControllerBase
         string.IsNullOrEmpty(json)
             ? Array.Empty<ExtraSnapshotResponse>()
             : JsonSerializer.Deserialize<List<ExtraSnapshotResponse>>(json) ?? new List<ExtraSnapshotResponse>();
+
+    /// <summary>
+    /// Top-10 extras del período agregando el snapshot jsonb en Postgres. <c>jsonb_array_elements</c> expande
+    /// el array de cada detalle y se agrupa por <c>Nombre</c> (clave PascalCase del snapshot serializado por
+    /// <c>PedidoService</c>). El <c>CASE ... 'array'</c> blinda contra columnas null o no-array (no revientan).
+    /// Multi-tenant explícito por <c>negocioId</c>: la query cruda no pasa por el Global Query Filter.
+    ///
+    /// Equivalente en memoria (fallback / referencia): traer <c>extras</c> de los detalles del período,
+    /// deserializar cada array y sumar +1 por elemento agrupando por <c>Nombre</c>. Se prefiere el SQL porque
+    /// evita transferir todos los snapshots; el resultado es idéntico.
+    /// </summary>
+    private async Task<List<CocinaItem>> ExtrasTopAsync(string negocioId, DateTime? desde, DateTime? hasta)
+    {
+        FormattableString sql = $"""
+            SELECT elem->>'Nombre' AS "Nombre", COUNT(*)::int AS "Cantidad"
+            FROM "PedidoDetalle" d
+            JOIN "Pedido" p ON p."id" = d."pedidoId"
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(d."extras") = 'array' THEN d."extras" ELSE '[]'::jsonb END
+            ) AS elem
+            WHERE d."negocioId" = {negocioId}
+              AND ({desde}::timestamp IS NULL OR p."createdAt" >= {desde})
+              AND ({hasta}::timestamp IS NULL OR p."createdAt" <= {hasta})
+              AND NULLIF(elem->>'Nombre', '') IS NOT NULL
+            GROUP BY elem->>'Nombre'
+            ORDER BY COUNT(*) DESC, elem->>'Nombre'
+            LIMIT 10
+            """;
+
+        return await _db.Database.SqlQuery<CocinaItem>(sql).ToListAsync();
+    }
+
+    /// <summary>Inicio del día AR (00:00:00 -03:00) como instante UTC comparable contra <c>createdAt</c>.</summary>
+    private static DateTime? DesdeArUtc(string? value) =>
+        TryParseDate(value, out var d) ? ArgentinaClock.ToUtc(d.Date) : null;
+
+    /// <summary>Fin del día AR (23:59:59.999… -03:00) como instante UTC comparable contra <c>createdAt</c>.</summary>
+    private static DateTime? HastaArUtc(string? value) =>
+        TryParseDate(value, out var d) ? ArgentinaClock.ToUtc(d.Date.AddDays(1).AddTicks(-1)) : null;
+
+    private static bool TryParseDate(string? value, out DateTime fecha)
+    {
+        fecha = default;
+        return !string.IsNullOrWhiteSpace(value)
+            && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out fecha);
+    }
+
+    /// <summary>Escapa los comodines de LIKE/ILIKE (<c>\ % _</c>) para tratar la búsqueda como substring literal.</summary>
+    private static string EscapeLike(string value) =>
+        value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 
     private static bool TryParseDesde(string? value, out DateTime fecha)
     {
