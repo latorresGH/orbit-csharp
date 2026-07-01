@@ -68,6 +68,8 @@ public partial class OrbitDbContext : DbContext
 
     public virtual DbSet<PizzaMediaMedium> PizzaMediaMedia { get; set; }
 
+    public virtual DbSet<Plan> Plans { get; set; }
+
     public virtual DbSet<PrismaMigration> PrismaMigrations { get; set; }
 
     public virtual DbSet<Producto> Productos { get; set; }
@@ -844,6 +846,7 @@ public partial class OrbitDbContext : DbContext
             entity.Property(e => e.Plan)
                 .HasDefaultValueSql("'basic'::text")
                 .HasColumnName("plan");
+            entity.Property(e => e.PlanId).HasColumnName("planId");
             entity.Property(e => e.Slug).HasColumnName("slug");
             entity.Property(e => e.TrialExpira)
                 .HasColumnType("timestamp(3) without time zone")
@@ -851,6 +854,50 @@ public partial class OrbitDbContext : DbContext
             entity.Property(e => e.UpdatedAt)
                 .HasColumnType("timestamp(3) without time zone")
                 .HasColumnName("updatedAt");
+
+            entity.HasIndex(e => e.PlanId, "Negocio_planId_idx");
+
+            entity.HasOne(d => d.PlanNavigation).WithMany(p => p.Negocios)
+                .HasForeignKey(d => d.PlanId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("Negocio_planId_fkey");
+        });
+
+        modelBuilder.Entity<Plan>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("Plan_pkey");
+
+            entity.ToTable("Plan");
+
+            entity.HasIndex(e => e.Slug, "Plan_slug_key").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.Activo)
+                .HasDefaultValue(true)
+                .HasColumnName("activo");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("createdAt");
+            entity.Property(e => e.LimiteProductos)
+                .HasDefaultValue(30)
+                .HasColumnName("limiteProductos");
+            entity.Property(e => e.LimiteUsuarios)
+                .HasDefaultValue(3)
+                .HasColumnName("limiteUsuarios");
+            entity.Property(e => e.MpPlanId).HasColumnName("mpPlanId");
+            entity.Property(e => e.Nombre).HasColumnName("nombre");
+            entity.Property(e => e.PrecioMensual).HasColumnName("precioMensual");
+            entity.Property(e => e.Slug).HasColumnName("slug");
+            entity.Property(e => e.TieneImagenes).HasColumnName("tieneImagenes");
+            entity.Property(e => e.TieneInsumos).HasColumnName("tieneInsumos");
+            entity.Property(e => e.TieneMesas).HasColumnName("tieneMesas");
+            entity.Property(e => e.TieneOfertas).HasColumnName("tieneOfertas");
+            entity.Property(e => e.TieneReportes).HasColumnName("tieneReportes");
+            entity.Property(e => e.TieneSignalR).HasColumnName("tieneSignalR");
+            entity.Property(e => e.TieneToppingGrupos).HasColumnName("tieneToppingGrupos");
+            // Plan es una tabla GLOBAL del sistema: NO lleva Global Query Filter (a diferencia de las
+            // entidades por-tenant). Se ve completa desde cualquier request. Ver OnModelCreatingPartial.
         });
 
         modelBuilder.Entity<OfertaProducto>(entity =>

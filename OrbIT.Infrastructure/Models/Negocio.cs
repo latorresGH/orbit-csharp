@@ -29,6 +29,13 @@ public partial class Negocio
 
     public string? LogoUrl { get; set; }
 
+    // FK al Plan de suscripción (tabla global). Nullable: un negocio puede no tener plan asignado (ON DELETE
+    // SET NULL). La nav se llama PlanNavigation para no colisionar con la propiedad legacy `Plan` (string),
+    // misma convención de scaffold que MesaNavigation en Pedido.
+    public string? PlanId { get; set; }
+
+    public virtual Plan? PlanNavigation { get; set; }
+
     public virtual ICollection<AderezoCategorium> AderezoCategoria { get; set; } = new List<AderezoCategorium>();
 
     public virtual ICollection<AderezoConsumo> AderezoConsumos { get; set; } = new List<AderezoConsumo>();
