@@ -10,7 +10,9 @@ using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
 using OrbIT.Application.CodigosDescuento;
+using OrbIT.Application.Demora;
 using OrbIT.Application.Ofertas;
+using OrbIT.Application.Pedidos;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
@@ -87,6 +89,12 @@ builder.Services.AddScoped<IAuditLogService, AuditLogService>();
 builder.Services.AddScoped<IOfertasCalculatorService, OfertasCalculatorService>();
 builder.Services.AddScoped<ICodigosDescuentoService, CodigosDescuentoService>();
 
+// ── Pedidos ───────────────────────────────────────────────────────────────
+// PedidoService orquesta crear + cancelar (transaccional, stock). DemoraService es un stub null en
+// Tanda A (best-effort, ver IDemoraService).
+builder.Services.AddScoped<IDemoraService, DemoraServiceStub>();
+builder.Services.AddScoped<IPedidoService, PedidoService>();
+
 var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
     ?? throw new InvalidOperationException(
         "Falta la sección 'Jwt'. Definila en appsettings.Development.json o en variables de entorno.");
@@ -135,6 +143,17 @@ builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
     options.AddPolicy("login", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            }));
+
+    // Protege el endpoint público más costoso del sistema (POST /pedidos): 5 req/min por IP.
+    options.AddPolicy("pedidos-create", httpContext =>
         RateLimitPartition.GetFixedWindowLimiter(
             partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             factory: _ => new FixedWindowRateLimiterOptions
