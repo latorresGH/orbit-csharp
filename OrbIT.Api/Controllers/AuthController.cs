@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using OrbIT.Api.Auth;
 using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
@@ -12,10 +13,7 @@ namespace OrbIT.Api.Controllers;
 [Route("auth")]
 public sealed class AuthController : ControllerBase
 {
-    private const string AccessCookie = "access_token";
     private const string RefreshCookie = "refresh_token";
-    private const string AccessCookiePath = "/";
-    private const string RefreshCookiePath = "/auth";
 
     // Mensaje genérico: no revela si fue el email, el negocio o la contraseña (anti-enumeración).
     private static readonly object CredencialesInvalidas = new { message = "Credenciales inválidas." };
@@ -23,20 +21,20 @@ public sealed class AuthController : ControllerBase
     private readonly OrbitDbContext _db;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IJwtTokenService _jwt;
-    private readonly IWebHostEnvironment _env;
+    private readonly ISessionIssuer _session;
     private readonly ILogger<AuthController> _logger;
 
     public AuthController(
         OrbitDbContext db,
         IPasswordHasher passwordHasher,
         IJwtTokenService jwt,
-        IWebHostEnvironment env,
+        ISessionIssuer session,
         ILogger<AuthController> logger)
     {
         _db = db;
         _passwordHasher = passwordHasher;
         _jwt = jwt;
-        _env = env;
+        _session = session;
         _logger = logger;
     }
 
@@ -107,7 +105,7 @@ public sealed class AuthController : ControllerBase
         user.IntentosLogin = 0;
         user.BloqueadoLoginHasta = null;
 
-        await EmitirSesionAsync(user);
+        await _session.IssueAsync(Response, user.Id, user.Role, user.NegocioId);
         await _db.SaveChangesAsync();
 
         _logger.LogInformation("Login exitoso para el usuario {UserId}.", user.Id);
@@ -145,7 +143,7 @@ public sealed class AuthController : ControllerBase
 
         // Rotación: se revoca el refresh usado y se emite uno nuevo.
         stored.Revocado = true;
-        await EmitirSesionAsync(user);
+        await _session.IssueAsync(Response, user.Id, user.Role, user.NegocioId);
         await _db.SaveChangesAsync();
 
         return Ok(UserPayload(user));
@@ -167,7 +165,7 @@ public sealed class AuthController : ControllerBase
             }
         }
 
-        LimpiarCookies();
+        _session.ClearCookies(Response);
         return Ok(new { message = "Sesión cerrada." });
     }
 
@@ -179,33 +177,6 @@ public sealed class AuthController : ControllerBase
         role = User.FindFirst("role")?.Value,
         negocioId = User.FindFirst("negocioId")?.Value,
     });
-
-    /// <summary>
-    /// Genera access + refresh, persiste el hash del refresh (rotación) y setea las cookies.
-    /// No hace SaveChanges: lo coordina el endpoint para agrupar con sus otros cambios.
-    /// </summary>
-    private async Task EmitirSesionAsync(User user)
-    {
-        var (accessToken, accessExpUtc) = _jwt.GenerateAccessToken(user.Id, user.Role, user.NegocioId);
-        var (refreshToken, refreshExpUtc) = _jwt.GenerateRefreshToken(user.Id, user.Role, user.NegocioId);
-
-        _db.RefreshTokens.Add(new RefreshToken
-        {
-            Id = Guid.NewGuid().ToString(),
-            TokenHash = _jwt.ComputeTokenHash(refreshToken),
-            UserId = user.Id,
-            NegocioId = user.NegocioId,
-            // Columnas "timestamp without time zone": Npgsql exige Kind=Unspecified.
-            ExpiresAt = DateTime.SpecifyKind(refreshExpUtc, DateTimeKind.Unspecified),
-            CreatedAt = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified),
-            Revocado = false,
-        });
-
-        SetCookie(AccessCookie, accessToken, accessExpUtc, AccessCookiePath);
-        SetCookie(RefreshCookie, refreshToken, refreshExpUtc, RefreshCookiePath);
-
-        await Task.CompletedTask;
-    }
 
     private static void AplicarLockoutProgresivo(User user)
     {
@@ -223,36 +194,6 @@ public sealed class AuthController : ControllerBase
         {
             user.BloqueadoLoginHasta = DateTime.SpecifyKind(hasta, DateTimeKind.Unspecified);
         }
-    }
-
-    private void SetCookie(string name, string value, DateTime expiresUtc, string path) =>
-        Response.Cookies.Append(name, value, new CookieOptions
-        {
-            HttpOnly = true,
-            // Secure salvo en Development, para poder probar sobre http en localhost.
-            Secure = !_env.IsDevelopment(),
-            SameSite = SameSiteMode.Lax,
-            Path = path,
-            Expires = new DateTimeOffset(expiresUtc, TimeSpan.Zero),
-        });
-
-    private void LimpiarCookies()
-    {
-        var secure = !_env.IsDevelopment();
-        Response.Cookies.Delete(AccessCookie, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = secure,
-            SameSite = SameSiteMode.Lax,
-            Path = AccessCookiePath,
-        });
-        Response.Cookies.Delete(RefreshCookie, new CookieOptions
-        {
-            HttpOnly = true,
-            Secure = secure,
-            SameSite = SameSiteMode.Lax,
-            Path = RefreshCookiePath,
-        });
     }
 
     private static object UserPayload(User user) => new

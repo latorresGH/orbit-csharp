@@ -6,14 +6,19 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
+using OrbIT.Api.Auth;
+using OrbIT.Api.Billing;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
 using OrbIT.Application.Caja;
 using OrbIT.Application.CodigosDescuento;
 using OrbIT.Application.Demora;
+using OrbIT.Application.Email;
+using OrbIT.Application.Negocios;
 using OrbIT.Application.Ofertas;
 using OrbIT.Application.Pedidos;
+using OrbIT.Application.Planes;
 using OrbIT.Application.Turnos;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
@@ -104,6 +109,30 @@ builder.Services.AddScoped<IPedidoService, PedidoService>();
 builder.Services.AddScoped<ITurnoService, TurnoService>();
 builder.Services.AddScoped<ICajaService, CajaService>();
 
+// ── Negocio (onboarding / lifecycle) ──────────────────────────────────────
+// NegocioService orquesta registro/verificación/alta-manual/purga (transaccional). IEmailService es un stub
+// que loguea el código (SMTP real pendiente). SessionIssuer centraliza la emisión de cookies/refresh, usada
+// por AuthController y por verificar-email.
+builder.Services.AddScoped<IEmailService, EmailServiceStub>();
+builder.Services.AddScoped<INegocioService, NegocioService>();
+builder.Services.AddScoped<ISessionIssuer, SessionIssuer>();
+
+// ── Planes / Billing ──────────────────────────────────────────────────────
+// IPlanGuard valida límites (productos/usuarios) y features del plan contratado. Registrado en DI pero
+// todavía NO enganchado a ningún controller existente (se aplicará en una iteración posterior). El
+// BillingController usa MercadoPago con el ACCESS_TOKEN de configuración (sección "MercadoPago").
+builder.Services.AddScoped<IPlanGuard, PlanGuard>();
+builder.Services.Configure<MercadoPagoSettings>(builder.Configuration.GetSection(MercadoPagoSettings.SectionName));
+
+// El SDK de MercadoPago usa un access token estático global. Lo seteamos al arrancar si hay un valor real
+// configurado (en tests/CI queda el placeholder → no se toca y las llamadas a MP nunca se ejecutan porque
+// los endpoints de billing requieren ADMIN). Cada request igual pasa RequestOptions con el token explícito.
+var mpSettings = builder.Configuration.GetSection(MercadoPagoSettings.SectionName).Get<MercadoPagoSettings>();
+if (mpSettings?.TieneAccessToken == true)
+{
+    MercadoPago.Config.MercadoPagoConfig.AccessToken = mpSettings.AccessToken;
+}
+
 var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
     ?? throw new InvalidOperationException(
         "Falta la sección 'Jwt'. Definila en appsettings.Development.json o en variables de entorno.");
@@ -142,6 +171,30 @@ builder.Services
 
                 return Task.CompletedTask;
             },
+
+            // Gate por-request (réplica de jwt.strategy de NestJS): rechaza usuarios desactivados o con email
+            // sin verificar. IgnoreQueryFilters porque el tenant aún no está resuelto en este punto.
+            OnTokenValidated = async context =>
+            {
+                var sub = context.Principal?.FindFirst("sub")?.Value;
+                if (string.IsNullOrEmpty(sub))
+                {
+                    context.Fail("Token inválido");
+                    return;
+                }
+
+                var db = context.HttpContext.RequestServices.GetRequiredService<OrbitDbContext>();
+                var estado = await db.Users.IgnoreQueryFilters()
+                    .Where(u => u.Id == sub)
+                    .Select(u => new { u.Activo, u.EmailVerificado })
+                    .FirstOrDefaultAsync();
+
+                // emailVerificado null (usuarios previos a la feature) pasa; solo false estricto bloquea.
+                if (estado is null || !estado.Activo || estado.EmailVerificado == false)
+                {
+                    context.Fail("Usuario no autorizado");
+                }
+            },
         };
     });
 
@@ -169,6 +222,28 @@ builder.Services.AddRateLimiter(options =>
             {
                 PermitLimit = 5,
                 Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            }));
+
+    // Registro público de negocios: 5 req/min por IP.
+    options.AddPolicy("registro", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+            }));
+
+    // Reenvío de código de verificación: 3 req cada 5 min por IP (equivale al @Throttle del NestJS).
+    options.AddPolicy("reenviar-codigo", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 3,
+                Window = TimeSpan.FromMinutes(5),
                 QueueLimit = 0,
             }));
 });
