@@ -120,6 +120,76 @@ public sealed class NegocioService : INegocioService
     }
 
     // ═════════════════════════════════════════════════════════════════════════
+    // Registro vía Google OAuth
+    // ═════════════════════════════════════════════════════════════════════════
+
+    public async Task<RegistroGoogleResult> RegistrarNuevoNegocioGoogleAsync(RegistroGoogleInput input, CancellationToken ct = default)
+    {
+        var slug = input.Slug.Trim().ToLowerInvariant();
+        var emailLower = input.Email.Trim().ToLowerInvariant();
+
+        if (await _db.Negocios.IgnoreQueryFilters().AnyAsync(n => n.Slug == slug, ct))
+        {
+            throw NegocioException.Conflict("Este slug ya está en uso, elegí otro");
+        }
+        // Paridad con NestJS (registrarNuevoNegocioGoogle): el email se chequea GLOBALMENTE (no bajo el slug).
+        if (await _db.Users.IgnoreQueryFilters().AnyAsync(u => u.Email == emailLower, ct))
+        {
+            throw NegocioException.Conflict("Ya existe una cuenta con ese email");
+        }
+
+        var now = Now();
+        var negocioId = Guid.NewGuid().ToString();
+        var userId = Guid.NewGuid().ToString();
+        var nombreAdmin = input.NombreAdmin.Trim();
+
+        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+
+        _db.Negocios.Add(new Negocio
+        {
+            Id = negocioId,
+            Nombre = input.NombreNegocio.Trim(),
+            Slug = slug,
+            Plan = "trial",
+            Activo = true,
+            TrialExpira = now.AddDays(TrialDias),
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+
+        _db.Users.Add(new User
+        {
+            Id = userId,
+            Email = emailLower,
+            // Contraseña placeholder inutilizable: se hashea un valor aleatorio para que la columna sea un hash
+            // BCrypt válido (BCrypt.Verify tira si no lo es) que ninguna contraseña real matchea. El usuario
+            // sólo se autentica por Google. Equivale al randomUUID() que el NestJS guardaba como password.
+            Password = _hasher.Hash(Guid.NewGuid().ToString()),
+            Nombre = nombreAdmin,
+            Role = Role.ADMIN,
+            NegocioId = negocioId,
+            Activo = true,
+            EmailVerificado = true, // Google ya verificó el email: sin código de verificación.
+            CreatedAt = now,
+        });
+
+        SembrarConfigYDemora(negocioId, now);
+
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            throw NegocioException.Conflict("Este slug ya está en uso, elegí otro");
+        }
+
+        return new RegistroGoogleResult(userId, Role.ADMIN, negocioId,
+            new UsuarioInfo(userId, emailLower, nombreAdmin, Role.ADMIN));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
     // Alta manual (SUPERADMIN)
     // ═════════════════════════════════════════════════════════════════════════
 

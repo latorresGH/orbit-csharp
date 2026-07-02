@@ -107,6 +107,7 @@ builder.Services.AddDbContext<OrbitDbContext>(options =>
 builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services.AddScoped<IGoogleAuthService, GoogleAuthService>();
 
 // ── Auditoría ─────────────────────────────────────────────────────────────
 // Servicio transversal de AuditLog, scoped al request (comparte el DbContext del
@@ -174,7 +175,20 @@ var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
     ?? throw new InvalidOperationException(
         "Falta la sección 'Jwt'. Definila en appsettings.Development.json o en variables de entorno.");
 
-builder.Services
+// ── Google OAuth ───────────────────────────────────────────────────────────
+// El handler nativo maneja el anti-CSRF del roundtrip (correlation cookie + state protegido con
+// DataProtection): NO hace falta el store de CSRF que el NestJS tenía en memoria. El slug (a qué negocio
+// loguear) viaja en AuthenticationProperties.Items. El único store que queda es el OTT (tabla TempToken).
+// Sólo se registra el handler si hay credenciales reales, así los tests/CI arrancan sin credenciales de Google.
+builder.Services.Configure<GoogleSettings>(builder.Configuration.GetSection(GoogleSettings.SectionName));
+var googleSettings = builder.Configuration.GetSection(GoogleSettings.SectionName).Get<GoogleSettings>() ?? new GoogleSettings();
+
+// TODO: registrar un IHostedService que borre periódicamente los TempToken expirados
+// (WHERE expiresAt < now), reemplazando el setInterval en memoria del NestJS. Por ahora no es urgente: el
+// exchange ya ignora los expirados/usados (WHERE usada = false AND expiresAt > now), así que un token vencido
+// nunca es válido; sólo quedan filas muertas acumulándose hasta que se implemente la limpieza.
+
+var authBuilder = builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -234,6 +248,27 @@ builder.Services
             },
         };
     });
+
+// Cookie externa temporal: sostiene la correlación OAuth + la identidad de Google entre el challenge y el
+// callback. No es la sesión de la app (esa va por access/refresh); se limpia apenas se lee en el callback.
+authBuilder.AddCookie(GoogleOAuth.ExternalScheme, options =>
+{
+    options.Cookie.Name = "orbit.external";
+    options.Cookie.SameSite = SameSiteMode.Lax;
+    options.ExpireTimeSpan = TimeSpan.FromMinutes(5);
+});
+
+if (googleSettings.TieneCredenciales)
+{
+    authBuilder.AddGoogle(options =>
+    {
+        options.ClientId = googleSettings.ClientId;
+        options.ClientSecret = googleSettings.ClientSecret;
+        options.CallbackPath = googleSettings.CallbackPath;
+        options.SignInScheme = GoogleOAuth.ExternalScheme;
+        options.SaveTokens = false; // no necesitamos los tokens de Google, sólo email+nombre del perfil.
+    });
+}
 
 builder.Services.AddAuthorization();
 

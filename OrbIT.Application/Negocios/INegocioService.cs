@@ -8,6 +8,9 @@ public sealed record RegistroNegocioInput(string NombreNegocio, string Slug, str
 
 public sealed record CrearConAdminInput(string Nombre, string Slug, string AdminEmail, string AdminPassword, string AdminNombre, string? Plan);
 
+/// <summary>Alta vía Google OAuth: sin contraseña (email ya verificado por Google).</summary>
+public sealed record RegistroGoogleInput(string NombreNegocio, string Slug, string NombreAdmin, string Email);
+
 public sealed record VerificacionInput(string Email, string NegocioSlug, string Codigo);
 
 // ── Results ──────────────────────────────────────────────────────────────────
@@ -24,6 +27,9 @@ public sealed record UsuarioInfo(string Id, string Email, string Nombre, Role Ro
 public sealed record VerificacionResult(string UserId, Role Role, string? NegocioId, UsuarioInfo User);
 
 public sealed record NegocioCreadoResult(string Id, string Nombre, string Slug, string Plan, DateTime? TrialExpira);
+
+/// <summary>Resultado del alta vía Google: datos para que el controller emita la sesión inmediatamente.</summary>
+public sealed record RegistroGoogleResult(string UserId, Role Role, string? NegocioId, UsuarioInfo User);
 
 // ── Excepción de dominio ─────────────────────────────────────────────────────
 
@@ -59,6 +65,14 @@ public interface INegocioService
 
     /// <summary>Alta manual de SUPERADMIN: como el registro pero el admin queda verificado y sin código.</summary>
     Task<NegocioCreadoResult> CrearConAdminAsync(CrearConAdminInput input, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Alta vía Google OAuth: crea negocio + admin + configs + DemoraConfig en una transacción, con trial de 7
+    /// días. Difiere del registro normal en que el admin queda <c>emailVerificado = true</c> (Google ya verificó
+    /// el email), sin código de verificación y con una contraseña placeholder inutilizable (sólo se autentica por
+    /// Google). Devuelve los datos para emitir la sesión de inmediato (queda logueado).
+    /// </summary>
+    Task<RegistroGoogleResult> RegistrarNuevoNegocioGoogleAsync(RegistroGoogleInput input, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Verifica el código de email. Aplica lockout progresivo ante intentos fallidos. Si el código es válido
