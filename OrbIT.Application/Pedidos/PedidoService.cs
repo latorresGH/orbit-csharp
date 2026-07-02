@@ -31,17 +31,20 @@ public sealed class PedidoService : IPedidoService
     private readonly IOfertasCalculatorService _ofertas;
     private readonly ICodigosDescuentoService _codigos;
     private readonly IDemoraService _demora;
+    private readonly IPedidoNotificationService _notifier;
 
     public PedidoService(
         OrbitDbContext db,
         IOfertasCalculatorService ofertas,
         ICodigosDescuentoService codigos,
-        IDemoraService demora)
+        IDemoraService demora,
+        IPedidoNotificationService notifier)
     {
         _db = db;
         _ofertas = ofertas;
         _codigos = codigos;
         _demora = demora;
+        _notifier = notifier;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -428,9 +431,22 @@ public sealed class PedidoService : IPedidoService
         await _db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
 
-        // TODO (SignalR PedidosHub): si input.Origen == "MENU", emitir el evento 'nuevo-pedido' a la room
-        // = negocioId con payload { id, nombreCliente, apellidoCliente, numeroCliente, tipo, total,
-        // timestamp }. Se cablea en el controller (que tiene el HttpContext / IHubContext) tras este return.
+        // SignalR: solo pedidos entrados por el menú público notifican al panel (paridad con NestJS, donde el
+        // gateway emitía 'nuevo-pedido' a la room = negocioId). Best-effort tras el commit: el notifier traga
+        // errores, nunca rompe la creación. El timestamp replica el new Date().toISOString() del original
+        // (UTC, milisegundos, sufijo 'Z').
+        if (string.Equals(input.Origen, "MENU", StringComparison.OrdinalIgnoreCase))
+        {
+            await _notifier.NotificarNuevoPedidoAsync(negocioId, new NuevoPedidoNotification(
+                pedidoIdResult,
+                nombreCliente ?? string.Empty,
+                apellidoCliente ?? string.Empty,
+                numeroCliente ?? string.Empty,
+                input.Tipo.ToString(),
+                totalConOfertas,
+                DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture)), ct);
+        }
+
         return pedidoIdResult;
     }
 

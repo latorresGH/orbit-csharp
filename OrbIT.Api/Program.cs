@@ -6,8 +6,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
+using System.Text.Json;
 using OrbIT.Api.Auth;
 using OrbIT.Api.Billing;
+using OrbIT.Api.Hubs;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
@@ -28,6 +30,26 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddControllers();
+
+// ── CORS ──────────────────────────────────────────────────────────────────
+// No había política de CORS en el proyecto. La agrego modelada en la del gateway NestJS (FRONTEND_URL +
+// credentials:true): el handshake de SignalR viaja con la cookie HttpOnly access_token, así que necesita
+// orígenes explícitos + AllowCredentials (incompatible con AllowAnyOrigin). Los orígenes se leen de
+// "Cors:AllowedOrigins" (array) en appsettings; default localhost:3000 para desarrollo.
+const string CorsPolicy = "orbit-frontend";
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+if (corsOrigins is null || corsOrigins.Length == 0)
+{
+    corsOrigins = new[] { "http://localhost:3000" };
+}
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(CorsPolicy, policy => policy
+        .WithOrigins(corsOrigins)
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials());
+});
 
 // ── Multi-tenancy ─────────────────────────────────────────────────────────
 // El tenant (negocio) activo se resuelve por request desde el HttpContext y se
@@ -101,6 +123,14 @@ builder.Services.AddScoped<ICodigosDescuentoService, CodigosDescuentoService>();
 // Tanda A (best-effort, ver IDemoraService).
 builder.Services.AddScoped<IDemoraService, DemoraServiceStub>();
 builder.Services.AddScoped<IPedidoService, PedidoService>();
+
+// ── Tiempo real (SignalR / PedidosHub) ────────────────────────────────────
+// El PedidoService emite 'nuevo-pedido' a la room = negocioId vía IPedidoNotificationService (abstracción en
+// Application; la impl PedidosNotificationService envuelve IHubContext<PedidosHub> acá en la capa Api). El
+// protocolo JSON se serializa en camelCase para replicar el contrato del socket.io del NestJS.
+builder.Services.AddSignalR()
+    .AddJsonProtocol(options => options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase);
+builder.Services.AddScoped<IPedidoNotificationService, PedidosNotificationService>();
 
 // ── Caja y Turnos ─────────────────────────────────────────────────────────
 // TurnoService orquesta abrir + cerrar (transaccional, con cálculo de ventas/efectivo esperado); el turno es
@@ -260,10 +290,15 @@ app.UseHttpsRedirection();
 
 app.UseRateLimiter();
 
+// CORS antes de auth y del ruteo del hub: el preflight/handshake de SignalR necesita los headers de CORS
+// resueltos con AllowCredentials para que el navegador mande la cookie access_token en el WebSocket.
+app.UseCors(CorsPolicy);
+
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<PedidosHub>("/hubs/pedidos");
 
 app.Run();
 
