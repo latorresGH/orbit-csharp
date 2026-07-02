@@ -84,6 +84,8 @@ public partial class OrbitDbContext : DbContext
 
     public virtual DbSet<ToppingGrupo> ToppingGrupos { get; set; }
 
+    public virtual DbSet<TempToken> TempTokens { get; set; }
+
     public virtual DbSet<Turno> Turnos { get; set; }
 
     public virtual DbSet<User> Users { get; set; }
@@ -1288,6 +1290,37 @@ public partial class OrbitDbContext : DbContext
                 .HasForeignKey(d => d.NegocioId)
                 .OnDelete(DeleteBehavior.Restrict)
                 .HasConstraintName("Proveedor_negocioId_fkey");
+        });
+
+        // TempToken: tabla de sistema (one-time tokens, hoy sólo el OTT de Google OAuth). SIN Global Query
+        // Filter, igual que RefreshToken. Agregada post-scaffold; reaplicar si se vuelve a scaffoldear.
+        modelBuilder.Entity<TempToken>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("TempToken_pkey");
+
+            entity.ToTable("TempToken");
+
+            entity.HasIndex(e => e.ExpiresAt, "TempToken_expiresAt_idx");
+
+            entity.HasIndex(e => e.TokenHash, "TempToken_tokenHash_key").IsUnique();
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("createdAt");
+            entity.Property(e => e.ExpiresAt)
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("expiresAt");
+            entity.Property(e => e.NegocioId).HasColumnName("negocioId");
+            entity.Property(e => e.TokenHash).HasColumnName("tokenHash");
+            entity.Property(e => e.Usada).HasColumnName("usada");
+            entity.Property(e => e.UserId).HasColumnName("userId");
+
+            // FK a User sin navegación inversa (no ensuciamos el modelo User con una colección más).
+            entity.HasOne(d => d.User).WithMany()
+                .HasForeignKey(d => d.UserId)
+                .HasConstraintName("TempToken_userId_fkey");
         });
 
         modelBuilder.Entity<RefreshToken>(entity =>
