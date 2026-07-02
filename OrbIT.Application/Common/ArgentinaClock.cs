@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace OrbIT.Application.Common;
 
 /// <summary>
@@ -39,6 +41,29 @@ public static class ArgentinaClock
     /// </summary>
     public static DateTime ToUtc(DateTime local) =>
         DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), Tz), DateTimeKind.Unspecified);
+
+    /// <summary>
+    /// Límite inferior de un filtro por fecha: inicio del día AR (00:00 -03:00) del día indicado por
+    /// <paramref name="value"/> (cualquier fecha ISO parseable), como instante UTC (<c>Kind=Unspecified</c>)
+    /// comparable contra columnas <c>createdAt</c>/<c>fecha</c>. Devuelve <c>null</c> si <paramref name="value"/>
+    /// es vacío o no parsea. Centraliza el helper que estaba duplicado en los controllers de reporting.
+    /// </summary>
+    public static DateTime? DesdeArUtc(string? value) =>
+        TryParseDate(value, out var d) ? ToUtc(d.Date) : null;
+
+    /// <summary>
+    /// Límite superior de un filtro por fecha: fin del día AR (23:59:59.999… -03:00) del día indicado por
+    /// <paramref name="value"/>, como instante UTC comparable. Devuelve <c>null</c> si no parsea.
+    /// </summary>
+    public static DateTime? HastaArUtc(string? value) =>
+        TryParseDate(value, out var d) ? ToUtc(d.Date.AddDays(1).AddTicks(-1)) : null;
+
+    private static bool TryParseDate(string? value, out DateTime fecha)
+    {
+        fecha = default;
+        return !string.IsNullOrWhiteSpace(value)
+            && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out fecha);
+    }
 
     private static TimeZoneInfo ResolveTimeZone()
     {

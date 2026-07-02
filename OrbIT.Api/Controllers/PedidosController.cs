@@ -173,8 +173,8 @@ public sealed class PedidosController : ControllerBase
         var lim = Math.Clamp(limit ?? 50, 1, 200);
 
         var query = _db.Pedidos.AsNoTracking().AsQueryable();
-        if (DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
-        if (HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
+        if (ArgentinaClock.DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
+        if (ArgentinaClock.HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
         if (tipo is { } t) query = query.Where(p => p.Tipo == t);
         if (estado is { } e) query = query.Where(p => p.Estado == e);
 
@@ -219,8 +219,8 @@ public sealed class PedidosController : ControllerBase
     public async Task<IActionResult> Stats([FromQuery] string? desde = null, [FromQuery] string? hasta = null)
     {
         var baseQuery = _db.Pedidos.AsNoTracking().AsQueryable();
-        if (DesdeArUtc(desde) is { } d) baseQuery = baseQuery.Where(p => p.CreatedAt >= d);
-        if (HastaArUtc(hasta) is { } h) baseQuery = baseQuery.Where(p => p.CreatedAt <= h);
+        if (ArgentinaClock.DesdeArUtc(desde) is { } d) baseQuery = baseQuery.Where(p => p.CreatedAt >= d);
+        if (ArgentinaClock.HastaArUtc(hasta) is { } h) baseQuery = baseQuery.Where(p => p.CreatedAt <= h);
 
         // porHora: hay que llevar cada createdAt (UTC) a hora AR, así que se traen sólo las fechas y se
         // bucketean en memoria (igual que el NestJS: la conversión de zona no es trivial en SQL).
@@ -295,8 +295,8 @@ public sealed class PedidosController : ControllerBase
             return Forbid();
         }
 
-        var d = DesdeArUtc(desde);
-        var h = HastaArUtc(hasta);
+        var d = ArgentinaClock.DesdeArUtc(desde);
+        var h = ArgentinaClock.HastaArUtc(hasta);
 
         var extrasTop = await ExtrasTopAsync(negocioId, d, h);
 
@@ -327,8 +327,8 @@ public sealed class PedidosController : ControllerBase
         // NestJS usaba UTC crudo acá (new Date(desde) sin offset + hasta con sufijo 'Z'), inconsistente con
         // historial/stats/cocina que usan -03:00. Casi seguro un bug: unificado a AR (-03:00) para todo Tanda B.
         var query = _db.Pedidos.AsNoTracking().Where(p => p.Estado == EstadoPedido.ENTREGADO);
-        if (DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
-        if (HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
+        if (ArgentinaClock.DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
+        if (ArgentinaClock.HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
 
         var pedidos = await query
             .OrderBy(p => p.CreatedAt)
@@ -732,21 +732,6 @@ public sealed class PedidosController : ControllerBase
             """;
 
         return await _db.Database.SqlQuery<CocinaItem>(sql).ToListAsync();
-    }
-
-    /// <summary>Inicio del día AR (00:00:00 -03:00) como instante UTC comparable contra <c>createdAt</c>.</summary>
-    private static DateTime? DesdeArUtc(string? value) =>
-        TryParseDate(value, out var d) ? ArgentinaClock.ToUtc(d.Date) : null;
-
-    /// <summary>Fin del día AR (23:59:59.999… -03:00) como instante UTC comparable contra <c>createdAt</c>.</summary>
-    private static DateTime? HastaArUtc(string? value) =>
-        TryParseDate(value, out var d) ? ArgentinaClock.ToUtc(d.Date.AddDays(1).AddTicks(-1)) : null;
-
-    private static bool TryParseDate(string? value, out DateTime fecha)
-    {
-        fecha = default;
-        return !string.IsNullOrWhiteSpace(value)
-            && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out fecha);
     }
 
     /// <summary>Escapa los comodines de LIKE/ILIKE (<c>\ % _</c>) para tratar la búsqueda como substring literal.</summary>
