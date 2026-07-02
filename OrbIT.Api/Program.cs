@@ -15,6 +15,7 @@ using OrbIT.Application.Audit;
 using OrbIT.Application.Auth;
 using OrbIT.Application.Caja;
 using OrbIT.Application.CodigosDescuento;
+using OrbIT.Application.Dashboard;
 using OrbIT.Application.Demora;
 using OrbIT.Application.Email;
 using OrbIT.Application.Negocios;
@@ -138,6 +139,12 @@ builder.Services.AddScoped<IPedidoNotificationService, PedidosNotificationServic
 // pedido y el batch (transaccional). Ambos son scoped y comparten el DbContext del request.
 builder.Services.AddScoped<ITurnoService, TurnoService>();
 builder.Services.AddScoped<ICajaService, CajaService>();
+
+// ── Dashboard ─────────────────────────────────────────────────────────────
+// DashboardService agrega métricas del negocio con GroupBy/Sum server-side (reemplaza el getMetrics
+// monolítico de NestJS). Reutiliza ITurnoService para el turno activo del resumen-hoy; el resto son queries
+// propias. Scoped, comparte el DbContext del request.
+builder.Services.AddScoped<IDashboardService, DashboardService>();
 
 // ── Negocio (onboarding / lifecycle) ──────────────────────────────────────
 // NegocioService orquesta registro/verificación/alta-manual/purga (transaccional). IEmailService es un stub
