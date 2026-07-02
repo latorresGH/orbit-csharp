@@ -1,9 +1,12 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using OrbIT.Api.Contracts.Insumos;
 using OrbIT.Api.MultiTenancy;
+using OrbIT.Application.Common;
+using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
 
@@ -38,8 +41,13 @@ namespace OrbIT.Api.Controllers;
 public sealed class InsumoController : ControllerBase
 {
     private const string TipoAjusteManual = "AJUSTE_MANUAL";
+    private const string TipoDescuentoPedido = "DESCUENTO_PEDIDO";
+    private const string TipoAperturaTurno = "APERTURA_TURNO";
+    private const string TipoCierreTurno = "CIERRE_TURNO";
     private const string ForeignKeyViolation = "23503";
     private const int MaxLimitMovimientos = 200;
+
+    private static readonly string[] TiposTurno = { TipoAperturaTurno, TipoCierreTurno };
 
     private readonly OrbitDbContext _db;
     private readonly ITenantProvider _tenant;
@@ -75,6 +83,80 @@ public sealed class InsumoController : ControllerBase
             p.Id,
             p.Receta.Count == 0
                 || p.Receta.All(r => stockMap.GetValueOrDefault(r.InsumoId) >= r.Cantidad)));
+
+        return Ok(resultado);
+    }
+
+    /// <summary>
+    /// Disponibilidad real de extras y aderezos: cuántas unidades se pueden vender según el stock (del insumo
+    /// que respalda al extra, o el stock propio) y el consumo por unidad (específico por categoría si se pasa
+    /// <c>categoriaId</c>; si hay categoría pero el extra/aderezo no tiene consumo configurado para ella →
+    /// disponible=0). Público de menú.
+    ///
+    /// Divergencia con NestJS: allá era <c>@Public()</c> con <c>negocioId</c> en el body (que el frontend nunca
+    /// mandaba → el endpoint quedaba roto). Acá el tenant se resuelve por claim o por <c>?negocio=slug</c> vía
+    /// <c>[AllowAnonymousWithTenant]</c>, y el Global Query Filter scopea extras/aderezos/insumos al negocio.
+    /// </summary>
+    [HttpPost("disponibilidad")]
+    [AllowAnonymousWithTenant]
+    public async Task<IActionResult> Disponibilidad([FromBody] CheckDisponibilidadRequest request)
+    {
+        var extraIds = request.ExtraIds ?? new List<string>();
+        var aderezoIds = request.AderezoIds ?? new List<string>();
+        var categoriaId = request.CategoriaId;
+
+        var extras = extraIds.Count > 0
+            ? await _db.Extras.AsNoTracking()
+                .Where(e => extraIds.Contains(e.Id))
+                .Select(e => new
+                {
+                    e.Id, e.Nombre, e.InsumoId, e.StockActual,
+                    Consumos = e.ExtraConsumos.Select(c => new { c.CategoriaId, c.CantidadConsumo }).ToList(),
+                })
+                .ToListAsync()
+            : [];
+
+        var aderezos = aderezoIds.Count > 0
+            ? await _db.Aderezos.AsNoTracking()
+                .Where(a => aderezoIds.Contains(a.Id))
+                .Select(a => new
+                {
+                    a.Id, a.Nombre, a.StockActual,
+                    Consumos = a.AderezoConsumos.Select(c => new { c.CategoriaId, c.CantidadConsumo }).ToList(),
+                })
+                .ToListAsync()
+            : [];
+
+        // Stock real de los insumos que respaldan a los extras (los aderezos usan su propio stockActual).
+        var insumoIds = extras.Where(e => e.InsumoId is not null).Select(e => e.InsumoId!).Distinct().ToList();
+        var stockInsumos = insumoIds.Count > 0
+            ? await _db.Insumos.AsNoTracking().Where(i => insumoIds.Contains(i.Id))
+                .ToDictionaryAsync(i => i.Id, i => i.StockActual)
+            : new Dictionary<string, double>();
+
+        var resultado = new List<DisponibilidadItemResponse>(extras.Count + aderezos.Count);
+
+        foreach (var extra in extras)
+        {
+            var stockActual = extra.InsumoId is not null
+                ? stockInsumos.GetValueOrDefault(extra.InsumoId, 0)
+                : extra.StockActual;
+
+            var (consumo, sinConfig) = ResolverConsumo(
+                categoriaId, extra.Consumos.Select(c => (c.CategoriaId, c.CantidadConsumo)));
+
+            resultado.Add(new DisponibilidadItemResponse(
+                extra.Id, extra.Nombre, "EXTRA", stockActual, consumo, CalcularDisponible(sinConfig, stockActual, consumo)));
+        }
+
+        foreach (var aderezo in aderezos)
+        {
+            var (consumo, sinConfig) = ResolverConsumo(
+                categoriaId, aderezo.Consumos.Select(c => (c.CategoriaId, c.CantidadConsumo)));
+
+            resultado.Add(new DisponibilidadItemResponse(
+                aderezo.Id, aderezo.Nombre, "ADEREZO", aderezo.StockActual, consumo, CalcularDisponible(sinConfig, aderezo.StockActual, consumo)));
+        }
 
         return Ok(resultado);
     }
@@ -183,6 +265,240 @@ public sealed class InsumoController : ControllerBase
             .ToListAsync();
 
         return Ok(data);
+    }
+
+    /// <summary>
+    /// Reporte unificado de movimientos: fusiona los <c>StockMovimiento</c> con los eventos de turno
+    /// (apertura/cierre) en una sola lista paginada. Filtros: <c>desde</c>/<c>hasta</c> (fecha, límites en
+    /// horario AR), <c>tipo</c> (un tipo de stock o <c>APERTURA_TURNO</c>/<c>CIERRE_TURNO</c>), <c>entidad</c>
+    /// (<c>INSUMO</c>/<c>EXTRA</c>/<c>ADEREZO</c>). Réplica funcional del <c>obtenerMovimientosUnificados</c>
+    /// de NestJS.
+    ///
+    /// <para>TODO (optimización diferida): la fusión + paginación es en memoria (como el NestJS): cuando no se
+    /// filtra por <c>tipo</c>, se traen ~<c>ceil((skip+limit)/2)</c> turnos y se ordena/pagina el conjunto en
+    /// memoria. Es una aproximación aceptable para reporting de uso ocasional sobre datasets acotados, pero en
+    /// páginas profundas puede quedar corta. La versión correcta sería un <c>UNION ALL</c> server-side
+    /// (StockMovimiento + apertura + cierre proyectados a columnas comunes) con <c>OFFSET/LIMIT</c> en SQL.
+    /// No se implementa ahora a propósito (decisión del dueño): no vale la complejidad todavía.</para>
+    /// </summary>
+    [HttpGet("movimientos")]
+    [Authorize(Roles = "ADMIN,TRABAJADOR")]
+    public async Task<IActionResult> GetMovimientosUnificados(
+        [FromQuery] string? desde = null,
+        [FromQuery] string? hasta = null,
+        [FromQuery] int page = 1,
+        [FromQuery] int limit = 50,
+        [FromQuery] string? tipo = null,
+        [FromQuery] string? entidad = null)
+    {
+        page = Math.Max(1, page);
+        limit = Math.Clamp(limit, 1, MaxLimitMovimientos);
+        var skip = (page - 1) * limit;
+        var fetchBound = skip + limit;
+
+        var esTipoTurno = tipo is not null && TiposTurno.Contains(tipo);
+        var esTipoStock = tipo is not null && !TiposTurno.Contains(tipo);
+
+        var fechaDesde = ParseFechaAr(desde, endOfDay: false);
+        var fechaHasta = ParseFechaAr(hasta, endOfDay: true);
+
+        // ── Movimientos de stock ──────────────────────────────────────────────
+        var stockItems = new List<MovimientoUnificadoResponse>();
+        var stockTotal = 0;
+        if (!esTipoTurno)
+        {
+            var stockQuery = _db.StockMovimientos.AsNoTracking().AsQueryable();
+            if (fechaDesde is { } fd) stockQuery = stockQuery.Where(m => m.CreatedAt >= fd);
+            if (fechaHasta is { } fh) stockQuery = stockQuery.Where(m => m.CreatedAt <= fh);
+            if (tipo is not null) stockQuery = stockQuery.Where(m => m.Tipo == tipo);
+            stockQuery = entidad switch
+            {
+                "INSUMO" => stockQuery.Where(m => m.InsumoId != null),
+                "EXTRA" => stockQuery.Where(m => m.ExtraId != null),
+                "ADEREZO" => stockQuery.Where(m => m.AderezoId != null),
+                _ => stockQuery,
+            };
+
+            stockTotal = await stockQuery.CountAsync();
+
+            // Modo "solo stock" (tipo de stock explícito): paginación server-side en DB. Si no, se traen
+            // fetchBound filas para fusionarlas con los turnos y paginar en memoria.
+            var stockRows = await stockQuery
+                .OrderByDescending(m => m.CreatedAt)
+                .Skip(esTipoStock ? skip : 0)
+                .Take(esTipoStock ? limit : fetchBound)
+                .Select(m => new
+                {
+                    m.Id, m.Tipo, m.CreatedAt, m.InsumoId, m.ExtraId, m.AderezoId,
+                    m.Cantidad, m.StockAntes, m.StockDespues, m.PedidoId, m.Motivo, m.UserId,
+                    InsumoNombre = m.Insumo != null ? m.Insumo.Nombre : null,
+                    InsumoUnidad = m.Insumo != null ? (UnidadMedida?)m.Insumo.UnidadMedida : null,
+                })
+                .ToListAsync();
+
+            // Nombres de extra/aderezo por lookup (evita N+1): dos lecturas planas y cruce en memoria.
+            var extraIds = stockRows.Where(m => m.ExtraId != null).Select(m => m.ExtraId!).Distinct().ToList();
+            var aderezoIds = stockRows.Where(m => m.AderezoId != null).Select(m => m.AderezoId!).Distinct().ToList();
+            var extraMap = extraIds.Count > 0
+                ? await _db.Extras.AsNoTracking().Where(e => extraIds.Contains(e.Id)).ToDictionaryAsync(e => e.Id, e => e.Nombre)
+                : new Dictionary<string, string>();
+            var aderezoMap = aderezoIds.Count > 0
+                ? await _db.Aderezos.AsNoTracking().Where(a => aderezoIds.Contains(a.Id)).ToDictionaryAsync(a => a.Id, a => a.Nombre)
+                : new Dictionary<string, string>();
+
+            stockItems.AddRange(stockRows.Select(m => new MovimientoUnificadoResponse(
+                m.Id, m.Tipo, m.CreatedAt, m.InsumoId, m.ExtraId, m.AderezoId,
+                m.Cantidad, m.StockAntes, m.StockDespues, m.PedidoId, m.Motivo, m.UserId,
+                ConfirmadoPor: null, // StockMovimiento no tiene confirmadoPor (paridad NestJS: undefined→null).
+                Insumo: m.InsumoNombre is not null ? new MovimientoUnificadoInsumo(m.InsumoNombre, m.InsumoUnidad!.Value) : null,
+                ExtraNombre: m.ExtraId is not null ? extraMap.GetValueOrDefault(m.ExtraId) : null,
+                AderezoNombre: m.AderezoId is not null ? aderezoMap.GetValueOrDefault(m.AderezoId) : null,
+                MontoReal: null, MontoEsperado: null, Diferencia: null)));
+        }
+
+        // Sólo stock: la DB ya paginó, devolvemos directo.
+        if (esTipoStock)
+        {
+            return Ok(new PagedResult<MovimientoUnificadoResponse>(stockItems, stockTotal, page, TotalPages(stockTotal, limit)));
+        }
+
+        // ── Eventos de turno (apertura + cierre) ──────────────────────────────
+        var turnoItems = new List<MovimientoUnificadoResponse>();
+        var turnoQuery = _db.Turnos.AsNoTracking().AsQueryable();
+        if (tipo == TipoAperturaTurno)
+        {
+            if (fechaDesde is { } fd) turnoQuery = turnoQuery.Where(t => t.HoraInicio >= fd);
+            if (fechaHasta is { } fh) turnoQuery = turnoQuery.Where(t => t.HoraInicio <= fh);
+        }
+        else if (tipo == TipoCierreTurno)
+        {
+            if (fechaDesde is { } fd) turnoQuery = turnoQuery.Where(t => t.HoraFin >= fd);
+            if (fechaHasta is { } fh) turnoQuery = turnoQuery.Where(t => t.HoraFin <= fh);
+            if (fechaDesde is null && fechaHasta is null) turnoQuery = turnoQuery.Where(t => t.HoraFin != null);
+        }
+        else if (fechaDesde is { } fd2 && fechaHasta is { } fh2)
+        {
+            turnoQuery = turnoQuery.Where(t =>
+                (t.HoraInicio >= fd2 && t.HoraInicio <= fh2) ||
+                (t.HoraFin >= fd2 && t.HoraFin <= fh2));
+        }
+        else if (fechaDesde is { } fd3)
+        {
+            turnoQuery = turnoQuery.Where(t => t.HoraInicio >= fd3 || t.HoraFin >= fd3);
+        }
+        else if (fechaHasta is { } fh3)
+        {
+            turnoQuery = turnoQuery.Where(t => t.HoraInicio <= fh3 || t.HoraFin <= fh3);
+        }
+
+        var turnos = await turnoQuery
+            .OrderByDescending(t => t.HoraInicio)
+            .Take((int)Math.Ceiling(fetchBound / 2.0))
+            .Select(t => new
+            {
+                t.Id, t.HoraInicio, t.HoraFin, t.CajaAperturaMonto, t.CajaCierreMonto, t.VentasTotales,
+                ConfirmadoPor = t.User.Nombre,
+            })
+            .ToListAsync();
+
+        foreach (var turno in turnos)
+        {
+            if (tipo is null || tipo == TipoAperturaTurno)
+            {
+                var inRange = (fechaDesde is not { } fd || turno.HoraInicio >= fd)
+                    && (fechaHasta is not { } fh || turno.HoraInicio <= fh);
+                if (tipo is null || inRange)
+                {
+                    turnoItems.Add(EventoTurno(
+                        $"{turno.Id}_apertura", TipoAperturaTurno, turno.HoraInicio, turno.ConfirmadoPor,
+                        montoReal: turno.CajaAperturaMonto, montoEsperado: null, diferencia: null));
+                }
+            }
+
+            if ((tipo is null || tipo == TipoCierreTurno) && turno.HoraFin is { } horaFin && turno.CajaCierreMonto is { } cierre)
+            {
+                var inRange = (fechaDesde is not { } fd || horaFin >= fd)
+                    && (fechaHasta is not { } fh || horaFin <= fh);
+                if (tipo is null || inRange)
+                {
+                    var montoEsperado = turno.CajaAperturaMonto + turno.VentasTotales;
+                    turnoItems.Add(EventoTurno(
+                        $"{turno.Id}_cierre", TipoCierreTurno, horaFin, turno.ConfirmadoPor,
+                        montoReal: cierre, montoEsperado: montoEsperado, diferencia: cierre - montoEsperado));
+                }
+            }
+        }
+
+        // ── Fusión + paginación en memoria (ver TODO del método) ──────────────
+        var todos = stockItems.Concat(turnoItems)
+            .OrderByDescending(x => x.CreatedAt)
+            .ToList();
+        var total = todos.Count;
+        var data = todos.Skip(skip).Take(limit).ToList();
+
+        return Ok(new PagedResult<MovimientoUnificadoResponse>(data, total, page, TotalPages(total, limit)));
+    }
+
+    /// <summary>
+    /// Reporte de consumo por período: agrupa los movimientos <c>DESCUENTO_PEDIDO</c> por insumo y suma el
+    /// consumo (GroupBy server-side, como en Gastos/Pedidos). Ordena por consumo descendente.
+    ///
+    /// Timezone AR para los límites <c>desde</c>/<c>hasta</c> (coherente con el resto del sistema). El NestJS
+    /// original usaba <c>new Date(desde)</c> (medianoche UTC) + <c>setHours</c> local — inconsistente con su
+    /// propio <c>/movimientos</c> (que sí usaba AR); acá se unifica a AR (mismo criterio que el reporte de
+    /// Pedidos).
+    /// </summary>
+    [HttpGet("reporte/consumo")]
+    [Authorize(Roles = "ADMIN,TRABAJADOR")]
+    public async Task<IActionResult> ReporteConsumo([FromQuery] string? desde, [FromQuery] string? hasta)
+    {
+        var start = ParseFechaAr(desde, endOfDay: false);
+        var end = ParseFechaAr(hasta, endOfDay: true);
+        if (start is null || end is null)
+        {
+            return BadRequest(new { message = "Los parámetros 'desde' y 'hasta' son obligatorios (formato fecha)." });
+        }
+
+        var agrupado = await _db.StockMovimientos.AsNoTracking()
+            .Where(m => m.Tipo == TipoDescuentoPedido
+                && m.InsumoId != null
+                && m.CreatedAt >= start.Value
+                && m.CreatedAt <= end.Value)
+            .GroupBy(m => m.InsumoId!)
+            .Select(g => new
+            {
+                InsumoId = g.Key,
+                Suma = g.Sum(x => x.Cantidad),
+                Cantidad = g.Count(),
+            })
+            .ToListAsync();
+
+        if (agrupado.Count == 0)
+        {
+            return Ok(Array.Empty<ReporteConsumoItemResponse>());
+        }
+
+        var insumoIds = agrupado.Select(g => g.InsumoId).ToList();
+        var insumoMap = await _db.Insumos.AsNoTracking()
+            .Where(i => insumoIds.Contains(i.Id))
+            .Select(i => new { i.Id, i.Nombre, i.UnidadMedida })
+            .ToDictionaryAsync(i => i.Id, i => i);
+
+        var reporte = agrupado
+            .Select(g =>
+            {
+                var info = insumoMap.GetValueOrDefault(g.InsumoId);
+                return new ReporteConsumoItemResponse(
+                    g.InsumoId,
+                    info?.Nombre ?? "Insumo eliminado",
+                    info?.UnidadMedida,
+                    Math.Abs(g.Suma),
+                    g.Cantidad);
+            })
+            .OrderByDescending(r => r.TotalConsumido)
+            .ToList();
+
+        return Ok(reporte);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -466,6 +782,62 @@ public sealed class InsumoController : ControllerBase
         string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static int TotalPages(int total, int limit) => (int)Math.Ceiling(total / (double)limit);
+
+    /// <summary>
+    /// Convierte una fecha <c>yyyy-MM-dd</c> (u otra parseable) a instante UTC comparable contra
+    /// <c>createdAt</c>, interpretando el día en horario AR: inicio → 00:00:00, fin → 23:59:59.999.
+    /// Reemplaza el truco de NestJS de concatenar <c>+ 'T00:00:00.000-03:00'</c> / <c>'T23:59:59.999-03:00'</c>.
+    /// </summary>
+    private static DateTime? ParseFechaAr(string? fecha, bool endOfDay)
+    {
+        if (string.IsNullOrWhiteSpace(fecha)
+            || !DateTime.TryParse(fecha, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return null;
+        }
+
+        var local = endOfDay
+            ? parsed.Date.AddDays(1).AddMilliseconds(-1) // 23:59:59.999 del día
+            : parsed.Date;                                // 00:00:00.000 del día
+        return ArgentinaClock.ToUtc(local);
+    }
+
+    /// <summary>
+    /// Resuelve el consumo por unidad de un extra/aderezo: 1 por defecto, o el <c>cantidadConsumo</c> específico
+    /// de la categoría si se pasó <paramref name="categoriaId"/>. Si hay categoría pero no hay config para ella,
+    /// devuelve <c>sinConfig=true</c> (⇒ disponible 0). Paridad con el NestJS.
+    /// </summary>
+    private static (double Consumo, bool SinConfig) ResolverConsumo(
+        string? categoriaId, IEnumerable<(string CategoriaId, double CantidadConsumo)> consumos)
+    {
+        if (categoriaId is null)
+        {
+            return (1, false);
+        }
+
+        foreach (var c in consumos)
+        {
+            if (c.CategoriaId == categoriaId)
+            {
+                return (c.CantidadConsumo, false);
+            }
+        }
+
+        return (1, true);
+    }
+
+    private static int CalcularDisponible(bool sinConfig, double stockActual, double consumo) =>
+        sinConfig || consumo <= 0 ? 0 : (int)Math.Floor(stockActual / consumo);
+
+    private static MovimientoUnificadoResponse EventoTurno(
+        string id, string tipo, DateTime createdAt, string? confirmadoPor,
+        double montoReal, double? montoEsperado, double? diferencia) => new(
+            id, tipo, createdAt,
+            InsumoId: null, ExtraId: null, AderezoId: null,
+            Cantidad: 0, StockAntes: 0, StockDespues: 0,
+            PedidoId: null, Motivo: null, UserId: null, ConfirmadoPor: confirmadoPor,
+            Insumo: null, ExtraNombre: null, AderezoNombre: null,
+            MontoReal: montoReal, MontoEsperado: montoEsperado, Diferencia: diferencia);
 
     private StockMovimiento NuevoMovimiento(
         string negocioId, double cantidad, double stockAntes, double stockDespues, string motivo,
