@@ -52,12 +52,14 @@ public sealed class PedidosController : ControllerBase
     private readonly OrbitDbContext _db;
     private readonly ITenantProvider _tenant;
     private readonly IPedidoService _pedidos;
+    private readonly IPedidoNotificationService _notifier;
 
-    public PedidosController(OrbitDbContext db, ITenantProvider tenant, IPedidoService pedidos)
+    public PedidosController(OrbitDbContext db, ITenantProvider tenant, IPedidoService pedidos, IPedidoNotificationService notifier)
     {
         _db = db;
         _tenant = tenant;
         _pedidos = pedidos;
+        _notifier = notifier;
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -459,8 +461,18 @@ public sealed class PedidosController : ControllerBase
             });
         }
 
+        var estadoAnterior = pedido.Estado;
         pedido.Estado = request.Estado;
         await _db.SaveChangesAsync();
+
+        // SignalR (best-effort, ya commiteado): notifica al panel el cambio de estado para refrescar la tarjeta
+        // sin recargar el listado. El notifier traga errores; una falla de emisión no rompe el cambio guardado.
+        await _notifier.NotificarActualizacionAsync(pedido.NegocioId, new PedidoActualizadoNotification(
+            pedido.Id,
+            pedido.Estado.ToString(),
+            estadoAnterior.ToString(),
+            DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fff'Z'", CultureInfo.InvariantCulture)));
+
         return Ok(await CargarPedidoResponseAsync(id));
     }
 

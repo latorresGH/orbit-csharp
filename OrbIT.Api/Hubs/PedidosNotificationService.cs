@@ -12,6 +12,7 @@ namespace OrbIT.Api.Hubs;
 public sealed class PedidosNotificationService : IPedidoNotificationService
 {
     private const string EventoNuevoPedido = "nuevo-pedido";
+    private const string EventoPedidoActualizado = "pedido-actualizado";
 
     private readonly IHubContext<PedidosHub> _hub;
     private readonly ILogger<PedidosNotificationService> _logger;
@@ -32,6 +33,19 @@ public sealed class PedidosNotificationService : IPedidoNotificationService
         {
             _logger.LogError(ex, "Error emitiendo '{Evento}' a la room {NegocioId} (pedido {PedidoId})",
                 EventoNuevoPedido, negocioId, pedido.Id);
+        }
+    }
+
+    public async Task NotificarActualizacionAsync(string negocioId, PedidoActualizadoNotification payload, CancellationToken ct = default)
+    {
+        try
+        {
+            await _hub.Clients.Group(negocioId).SendAsync(EventoPedidoActualizado, payload, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error emitiendo '{Evento}' a la room {NegocioId} (pedido {PedidoId})",
+                EventoPedidoActualizado, negocioId, payload.Id);
         }
     }
 }

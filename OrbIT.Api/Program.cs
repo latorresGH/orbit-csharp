@@ -8,6 +8,7 @@ using Microsoft.IdentityModel.Tokens;
 using Npgsql;
 using System.Text.Json;
 using OrbIT.Api.Auth;
+using OrbIT.Api.BackgroundServices;
 using OrbIT.Api.Billing;
 using OrbIT.Api.Hubs;
 using OrbIT.Api.MultiTenancy;
@@ -148,10 +149,17 @@ builder.Services.AddScoped<ICajaService, CajaService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 
 // ── Negocio (onboarding / lifecycle) ──────────────────────────────────────
-// NegocioService orquesta registro/verificación/alta-manual/purga (transaccional). IEmailService es un stub
-// que loguea el código (SMTP real pendiente). SessionIssuer centraliza la emisión de cookies/refresh, usada
-// por AuthController y por verificar-email.
-builder.Services.AddScoped<IEmailService, EmailServiceStub>();
+// NegocioService orquesta registro/verificación/alta-manual/purga (transaccional). SessionIssuer centraliza la
+// emisión de cookies/refresh, usada por AuthController y por verificar-email.
+//
+// Email: ResendEmailService es la implementación real (POST a la API de Resend) con el fallback del stub
+// integrado — si no hay ResendSettings:ApiKey real (dev/test/CI con placeholder), loguea el código en vez de
+// mandarlo, así el flujo de registro sigue funcionando sin credenciales. El HttpClient nombrado apunta a la
+// API de Resend; el Authorization Bearer se setea por request (depende de la key configurada).
+builder.Services.Configure<ResendSettings>(builder.Configuration.GetSection(ResendSettings.SectionName));
+builder.Services.AddHttpClient(ResendEmailService.HttpClientName, client =>
+    client.BaseAddress = new Uri("https://api.resend.com/"));
+builder.Services.AddScoped<IEmailService, ResendEmailService>();
 builder.Services.AddScoped<INegocioService, NegocioService>();
 builder.Services.AddScoped<ISessionIssuer, SessionIssuer>();
 
@@ -183,10 +191,9 @@ var jwtSettings = builder.Configuration.GetSection("Jwt").Get<JwtSettings>()
 builder.Services.Configure<GoogleSettings>(builder.Configuration.GetSection(GoogleSettings.SectionName));
 var googleSettings = builder.Configuration.GetSection(GoogleSettings.SectionName).Get<GoogleSettings>() ?? new GoogleSettings();
 
-// TODO: registrar un IHostedService que borre periódicamente los TempToken expirados
-// (WHERE expiresAt < now), reemplazando el setInterval en memoria del NestJS. Por ahora no es urgente: el
-// exchange ya ignora los expirados/usados (WHERE usada = false AND expiresAt > now), así que un token vencido
-// nunca es válido; sólo quedan filas muertas acumulándose hasta que se implemente la limpieza.
+// Limpieza periódica de TempToken (usados o expirados), reemplaza el setInterval en memoria del NestJS. Corre
+// cada hora en un scope propio; el exchange ya ignora expirados/usados, esto sólo evita filas muertas.
+builder.Services.AddHostedService<TempTokenCleanupService>();
 
 var authBuilder = builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
