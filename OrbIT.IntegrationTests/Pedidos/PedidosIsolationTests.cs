@@ -135,6 +135,59 @@ public sealed class PedidosIsolationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Cotizar_devuelve_precio_autoritativo_sin_efectos()
+    {
+        var client = await LoginAsync(AdminAEmail, NegocioASlug);
+
+        // Mismo carrito que Create_LOCAL_completo_flujo_end_to_end.
+        var body = new
+        {
+            tipo = TipoPedido.LOCAL,
+            nombreCliente = "Juan",
+            apellidoCliente = "Pérez",
+            numeroCliente = "1122334455",
+            detalles = new[]
+            {
+                new
+                {
+                    productoId = ProdRecetaId,
+                    cantidad = 1,
+                    extras = new[] { new { extraId = ExtraId, cantidad = 2 } },
+                    aderezosIds = new[] { AdeId },
+                },
+            },
+        };
+
+        var resp = await client.PostAsJsonAsync("/pedidos/cotizar", body);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var cot = (await resp.Content.ReadFromJsonAsync<CotizacionDto>())!;
+
+        // Mismo pricing que la creación: 1000 + 200 (1 de 2 extras cobrado) + 150 aderezo premium = 1350.
+        Assert.Equal(1350, cot.Total);
+        Assert.Equal(1350, cot.Subtotal);
+        Assert.Equal(0, cot.DescuentoOferta);
+        Assert.Equal(0, cot.DescuentoCodigo);
+
+        var linea = Assert.Single(cot.Lineas);
+        Assert.Equal(ProdRecetaId, linea.ProductoId);
+        Assert.Equal(1350, linea.Subtotal);
+        Assert.Equal(2, linea.Extras.Count);
+        Assert.Equal(1, linea.Extras.Count(e => e.Cobrado));
+        Assert.Equal(1, linea.Extras.Count(e => !e.Cobrado));
+        Assert.Single(linea.Aderezos);
+
+        // Sin efectos secundarios: no se creó pedido, no se movió stock, no se creó cliente.
+        await UsingDbAsync(async db =>
+        {
+            Assert.Equal(0, await db.Pedidos.IgnoreQueryFilters().CountAsync());
+            Assert.Equal(100, (await db.Insumos.IgnoreQueryFilters().FirstAsync(i => i.Id == InsId)).StockActual);
+            Assert.Equal(50, (await db.Extras.IgnoreQueryFilters().FirstAsync(e => e.Id == ExtraId)).StockActual);
+            Assert.Equal(30, (await db.Aderezos.IgnoreQueryFilters().FirstAsync(a => a.Id == AdeId)).StockActual);
+            Assert.Equal(0, await db.Clientes.IgnoreQueryFilters().CountAsync());
+        });
+    }
+
+    [Fact]
     public async Task Create_stock_insuficiente_revierte_todo()
     {
         var client = await LoginAsync(AdminAEmail, NegocioASlug);
@@ -331,4 +384,15 @@ public sealed class PedidosIsolationTests : IAsyncLifetime
     private sealed record AderezoDto(string Id, string Nombre);
 
     private sealed record TrackingDto(string Id, EstadoPedido Estado, double Total, string? NombreCliente, string? Direccion);
+
+    private sealed record CotizacionDto(
+        List<CotLineaDto> Lineas, double Subtotal, double DescuentoOferta, double DescuentoCodigo, double Total);
+
+    private sealed record CotLineaDto(
+        string ProductoId, string? NombreProducto, int Cantidad, double PrecioUnitario,
+        List<CotExtraDto> Extras, List<CotAderezoDto> Aderezos, double Subtotal);
+
+    private sealed record CotExtraDto(string Nombre, bool Cobrado, double Precio);
+
+    private sealed record CotAderezoDto(string Nombre);
 }

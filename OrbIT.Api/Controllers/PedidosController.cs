@@ -117,6 +117,33 @@ public sealed class PedidosController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, response);
     }
 
+    /// <summary>
+    /// Cotiza un carrito y devuelve el precio autoritativo (líneas, extras cobrados, aderezos, ofertas y
+    /// código, total) reutilizando el pricing de la creación, pero sin crear nada, sin descontar stock y sin
+    /// consumir usos de ofertas/códigos. Es el endpoint que usa el POS para el total en vivo. Solo staff
+    /// autenticado (a diferencia de <see cref="Crear"/>, que es público de menú).
+    /// </summary>
+    [HttpPost("cotizar")]
+    [Authorize(Roles = "ADMIN,TRABAJADOR")]
+    public async Task<IActionResult> Cotizar([FromBody] CreatePedidoRequest request)
+    {
+        var negocioId = _tenant.NegocioId;
+        if (string.IsNullOrEmpty(negocioId))
+        {
+            return Forbid();
+        }
+
+        try
+        {
+            var cotizacion = await _pedidos.CotizarPedidoAsync(MapToInput(request, esAutenticado: true), negocioId);
+            return Ok(cotizacion);
+        }
+        catch (PedidoException ex)
+        {
+            return StatusCode(ex.StatusCode, new { message = ex.Message });
+        }
+    }
+
     // ═════════════════════════════════════════════════════════════════════════
     // Lecturas
     // ═════════════════════════════════════════════════════════════════════════

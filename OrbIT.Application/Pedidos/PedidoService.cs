@@ -182,112 +182,35 @@ public sealed class PedidoService : IPedidoService
             }
         }
 
-        // ── Armado de detalles + pricing (extras gratis/cobrado, aderezos gratis) ──
-        var totalNuevosItems = 0.0;
-        var subtotalPorProducto = new Dictionary<string, double>();
-        var detallesEntidades = new List<PedidoDetalle>();
-        var extrasADescontar = new List<(string ExtraId, int Cantidad, string? CategoriaId)>();
-        var aderezosADescontar = new List<(string AderezoId, int Cantidad, string? CategoriaId)>();
+        // ── Pricing (extras gratis/cobrado, aderezos gratis, media-media) ──
+        // La lógica de cálculo vive en CalcularLineasAsync, compartida con CotizarPedidoAsync (preview).
+        var calc = await CalcularLineasAsync(detalles, prodMap, extraMap, aderezoMap, ct);
+        var totalNuevosItems = calc.TotalNuevosItems;
+        var subtotalPorProducto = calc.SubtotalPorProducto;
+        var extrasADescontar = calc.ExtrasADescontar;
+        var aderezosADescontar = calc.AderezosADescontar;
 
-        foreach (var d in detalles)
+        // ── Armado de entidades EF a partir del pricing calculado ──
+        var detallesEntidades = new List<PedidoDetalle>(calc.Lineas.Count);
+        for (var i = 0; i < detalles.Count; i++)
         {
-            var prod = prodMap[d.ProductoId];
-            var cantidad = d.Cantidad;
-            var precioUnitario = prod.Precio;
-            var categoriaId = prod.CategoriaId;
-            var extrasNorm = (d.Extras ?? Array.Empty<PedidoExtraInput>())
-                .Select(e => (ExtraId: e.ExtraId, Cantidad: e.Cantidad <= 0 ? 1 : e.Cantidad)).ToList();
-            foreach (var e in extrasNorm) extrasADescontar.Add((e.ExtraId, e.Cantidad, categoriaId));
-
-            // Expandir extras en unidades.
-            var expanded = new List<ExtraData>();
-            foreach (var e in extrasNorm)
-            {
-                if (extraMap.TryGetValue(e.ExtraId, out var extra))
-                    for (var i = 0; i < e.Cantidad; i++) expanded.Add(extra);
-            }
-
-            // Conteo por toppingGrupo para los "gratis".
-            var grupoCounts = new Dictionary<string, (int Incluido, int Max)>();
-            foreach (var extra in expanded)
-            {
-                if (extra.ToppingGrupoId is { } gid && extra.ToppingGrupo is { } tg)
-                {
-                    var gc = grupoCounts.TryGetValue(gid, out var existing) ? existing : (Incluido: 0, Max: tg.MaxExtrasGratis);
-                    if (!extra.EsPremium && tg.EsIncluido) gc.Incluido++;
-                    grupoCounts[gid] = gc;
-                }
-            }
-            var grupoFreeRemaining = grupoCounts.ToDictionary(kv => kv.Key, kv => Math.Min(kv.Value.Incluido, kv.Value.Max));
-
-            var extrasCobradoTotal = 0.0;
-            var extrasSnapshot = new List<ExtraSnapshot>();
-            foreach (var extra in expanded)
-            {
-                var precioExtra = GetExtraPrecio(extra, categoriaId);
-                var esPremium = extra.EsPremium;
-                bool cobrado;
-                if (esPremium)
-                {
-                    cobrado = true;
-                }
-                else if (extra.ToppingGrupoId is { } gid && extra.ToppingGrupo?.EsIncluido == true)
-                {
-                    var remaining = grupoFreeRemaining.GetValueOrDefault(gid);
-                    if (remaining > 0) { grupoFreeRemaining[gid] = remaining - 1; cobrado = false; }
-                    else cobrado = true;
-                }
-                else
-                {
-                    cobrado = true;
-                }
-
-                var precioFinal = cobrado ? precioExtra : 0;
-                extrasCobradoTotal += precioFinal;
-                extrasSnapshot.Add(new ExtraSnapshot(extra.Id, extra.Nombre, precioExtra, cobrado));
-            }
-
-            var precioFinalUnitario = precioUnitario;
-            if (d.MediaMedia?.Sabor2Id is { } sab2 && prodMap.TryGetValue(sab2, out var prodSab2))
-                precioFinalUnitario = Math.Max(precioFinalUnitario, prodSab2.Precio);
-
-            // Aderezos gratis hasta maxAderezosGratis de la categoría.
-            var aderezosCobrado = 0.0;
-            var aderezosLinea = d.AderezosIds ?? Array.Empty<string>();
-            if (aderezosLinea.Count > 0)
-            {
-                var maxGratis = categoriaId is null
-                    ? DefaultMaxAderezosGratis
-                    : await _db.Categoria.AsNoTracking().Where(c => c.Id == categoriaId).Select(c => (int?)c.MaxAderezosGratis).FirstOrDefaultAsync(ct) ?? DefaultMaxAderezosGratis;
-                var gratisCount = 0;
-                foreach (var adeId in aderezosLinea)
-                {
-                    if (!aderezoMap.TryGetValue(adeId, out var ade)) continue;
-                    if (ade.EsPremium) aderezosCobrado += ade.Precio;
-                    else if (gratisCount >= maxGratis) aderezosCobrado += ade.Precio;
-                    else gratisCount++;
-                }
-                foreach (var adeId in aderezosLinea) aderezosADescontar.Add((adeId, cantidad, categoriaId));
-            }
-
-            var subtotal = precioFinalUnitario * cantidad + extrasCobradoTotal + aderezosCobrado;
-            totalNuevosItems += subtotal;
-            subtotalPorProducto[d.ProductoId] = subtotalPorProducto.GetValueOrDefault(d.ProductoId) + subtotal;
+            var d = detalles[i];
+            var lc = calc.Lineas[i];
 
             var detalle = new PedidoDetalle
             {
                 Id = Guid.NewGuid().ToString(),
                 NegocioId = negocioId,
                 ProductoId = d.ProductoId,
-                Cantidad = cantidad,
-                PrecioUnitario = precioFinalUnitario,
-                Subtotal = subtotal,
+                Cantidad = lc.Cantidad,
+                PrecioUnitario = lc.PrecioUnitario,
+                Subtotal = lc.Subtotal,
                 Notas = TrimOrNull(d.Notas),
                 SinExtras = d.SinExtras,
                 ImpresoEnCocina = d.ImpresoEnCocina,
-                Extras = extrasSnapshot.Count > 0 ? JsonSerializer.Serialize(extrasSnapshot) : null,
+                Extras = lc.Extras.Count > 0 ? JsonSerializer.Serialize(lc.Extras) : null,
             };
-            foreach (var adeId in aderezosLinea)
+            foreach (var adeId in lc.AderezosIds)
                 if (aderezoMap.TryGetValue(adeId, out var ade)) detalle.As.Add(ade.Entidad);
             if (d.MediaMedia is { Sabor1Id: { } s1, Sabor2Id: { } s2b })
                 detalle.PizzaMediaMedium = new PizzaMediaMedium { Id = Guid.NewGuid().ToString(), Sabor1Id = s1, Sabor2Id = s2b, NegocioId = negocioId };
@@ -448,6 +371,196 @@ public sealed class PedidoService : IPedidoService
         }
 
         return pedidoIdResult;
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // COTIZAR (preview de precio, sin persistencia ni efectos)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    public async Task<CotizacionResult> CotizarPedidoAsync(CrearPedidoInput input, string negocioId, CancellationToken ct = default)
+    {
+        var detalles = input.Detalles;
+        if (detalles.Count == 0)
+        {
+            throw PedidoException.BadRequest("El pedido no tiene productos");
+        }
+
+        // Cargar productos/extras/aderezos (tenant-scoped por el Global Query Filter), igual que la creación.
+        var sabor2Ids = detalles.Where(d => d.MediaMedia?.Sabor2Id is not null).Select(d => d.MediaMedia!.Sabor2Id!);
+        var todosProductoIds = detalles.Select(d => d.ProductoId).Concat(sabor2Ids).Distinct().ToList();
+        var prodMap = await CargarProductosAsync(todosProductoIds, ct);
+        foreach (var d in detalles)
+        {
+            if (!prodMap.TryGetValue(d.ProductoId, out var prod))
+                throw PedidoException.BadRequest($"Producto no encontrado o no pertenece a este negocio: {d.ProductoId}");
+            if (!prod.Activo) throw PedidoException.BadRequest($"Producto inactivo: {d.ProductoId}");
+        }
+
+        var extraIds = detalles.SelectMany(d => d.Extras ?? Array.Empty<PedidoExtraInput>()).Select(e => e.ExtraId).Distinct().ToList();
+        var extraMap = await CargarExtrasAsync(extraIds, ct);
+        var aderezoIds = detalles.SelectMany(d => d.AderezosIds ?? Array.Empty<string>()).Distinct().ToList();
+        var aderezoMap = await CargarAderezosAsync(aderezoIds, ct);
+
+        var calc = await CalcularLineasAsync(detalles, prodMap, extraMap, aderezoMap, ct);
+
+        // Ofertas: mismo cálculo que la creación, pero SIN consumir usos (read-only). Se descartan las ofertas
+        // con cupo (MaxUsosTotales) ya agotado, espejando el consumo atómico de CrearPedidoAsync.
+        var lineasCalc = detalles
+            .Select(d => new LineaCalculo(d.ProductoId, d.Cantidad, prodMap[d.ProductoId].Precio, d.MediaMedia?.Sabor2Id is not null))
+            .ToList();
+        var calculo = await _ofertas.CalcularAsync(lineasCalc, negocioId, ct);
+
+        var descuentoOfertas = 0.0;
+        CotizacionOfertaAplicada? ofertaAplicada = null;
+        if (calculo.OfertasAplicadas.Count > 0)
+        {
+            var ids = calculo.OfertasAplicadas.Select(o => o.OfertaId).ToList();
+            var cupos = await _db.Oferta.AsNoTracking().Where(o => ids.Contains(o.Id))
+                .Select(o => new { o.Id, o.MaxUsosTotales, o.UsosActuales })
+                .ToDictionaryAsync(o => o.Id, o => o, ct);
+            foreach (var aplicada in calculo.OfertasAplicadas)
+            {
+                if (cupos.TryGetValue(aplicada.OfertaId, out var cupo) && cupo.MaxUsosTotales is { } limite && cupo.UsosActuales >= limite)
+                    continue; // cupo agotado: no se aplicaría al crear
+                descuentoOfertas += aplicada.Descuento;
+                ofertaAplicada ??= new CotizacionOfertaAplicada(aplicada.Nombre, aplicada.Tipo);
+            }
+        }
+
+        // Código: mismo cálculo/validación/tope, SIN consumir uso.
+        var (descuentoCodigo, codigo) = await CalcularDescuentoCodigoAsync(
+            input.CodigoDescuento, negocioId, calc.TotalNuevosItems, descuentoOfertas, calc.SubtotalPorProducto, ct);
+
+        var total = Math.Max(0, calc.TotalNuevosItems - descuentoOfertas - descuentoCodigo);
+
+        var lineas = calc.Lineas.Select(l => new CotizacionLinea(
+            l.ProductoId,
+            l.NombreProducto,
+            l.Cantidad,
+            l.PrecioUnitario,
+            l.Extras.Select(e => new CotizacionExtra(e.Nombre, e.Cobrado, e.Precio)).ToList(),
+            l.AderezosIds.Select(id => new CotizacionAderezo(aderezoMap.TryGetValue(id, out var a) ? a.Nombre : id)).ToList(),
+            l.Subtotal)).ToList();
+
+        return new CotizacionResult(
+            lineas,
+            calc.TotalNuevosItems,
+            descuentoOfertas,
+            descuentoCodigo,
+            total,
+            ofertaAplicada,
+            descuentoCodigo > 0 && codigo is not null ? new CotizacionCodigoAplicado(codigo.Codigo, descuentoCodigo) : null);
+    }
+
+    /// <summary>
+    /// Calcula el pricing de las líneas (precio unitario con media-media, extras cobrado/gratis por
+    /// ToppingGrupo, aderezos gratis por Categoria.MaxAderezosGratis) sin ningún efecto secundario. Es el
+    /// núcleo compartido por <see cref="CrearPedidoAsync"/> (que arma las entidades y persiste) y
+    /// <see cref="CotizarPedidoAsync"/> (que solo devuelve el precio). Asume los mapas ya cargados.
+    /// </summary>
+    private async Task<LineasCalculadas> CalcularLineasAsync(
+        IReadOnlyList<PedidoLineaInput> detalles,
+        IReadOnlyDictionary<string, ProductoData> prodMap,
+        IReadOnlyDictionary<string, ExtraData> extraMap,
+        IReadOnlyDictionary<string, AderezoData> aderezoMap,
+        CancellationToken ct)
+    {
+        var totalNuevosItems = 0.0;
+        var subtotalPorProducto = new Dictionary<string, double>();
+        var extrasADescontar = new List<(string ExtraId, int Cantidad, string? CategoriaId)>();
+        var aderezosADescontar = new List<(string AderezoId, int Cantidad, string? CategoriaId)>();
+        var lineas = new List<LineaCalc>(detalles.Count);
+
+        foreach (var d in detalles)
+        {
+            var prod = prodMap[d.ProductoId];
+            var cantidad = d.Cantidad;
+            var precioUnitario = prod.Precio;
+            var categoriaId = prod.CategoriaId;
+            var extrasNorm = (d.Extras ?? Array.Empty<PedidoExtraInput>())
+                .Select(e => (ExtraId: e.ExtraId, Cantidad: e.Cantidad <= 0 ? 1 : e.Cantidad)).ToList();
+            foreach (var e in extrasNorm) extrasADescontar.Add((e.ExtraId, e.Cantidad, categoriaId));
+
+            // Expandir extras en unidades.
+            var expanded = new List<ExtraData>();
+            foreach (var e in extrasNorm)
+            {
+                if (extraMap.TryGetValue(e.ExtraId, out var extra))
+                    for (var i = 0; i < e.Cantidad; i++) expanded.Add(extra);
+            }
+
+            // Conteo por toppingGrupo para los "gratis".
+            var grupoCounts = new Dictionary<string, (int Incluido, int Max)>();
+            foreach (var extra in expanded)
+            {
+                if (extra.ToppingGrupoId is { } gid && extra.ToppingGrupo is { } tg)
+                {
+                    var gc = grupoCounts.TryGetValue(gid, out var existing) ? existing : (Incluido: 0, Max: tg.MaxExtrasGratis);
+                    if (!extra.EsPremium && tg.EsIncluido) gc.Incluido++;
+                    grupoCounts[gid] = gc;
+                }
+            }
+            var grupoFreeRemaining = grupoCounts.ToDictionary(kv => kv.Key, kv => Math.Min(kv.Value.Incluido, kv.Value.Max));
+
+            var extrasCobradoTotal = 0.0;
+            var extrasSnapshot = new List<ExtraSnapshot>();
+            foreach (var extra in expanded)
+            {
+                var precioExtra = GetExtraPrecio(extra, categoriaId);
+                var esPremium = extra.EsPremium;
+                bool cobrado;
+                if (esPremium)
+                {
+                    cobrado = true;
+                }
+                else if (extra.ToppingGrupoId is { } gid && extra.ToppingGrupo?.EsIncluido == true)
+                {
+                    var remaining = grupoFreeRemaining.GetValueOrDefault(gid);
+                    if (remaining > 0) { grupoFreeRemaining[gid] = remaining - 1; cobrado = false; }
+                    else cobrado = true;
+                }
+                else
+                {
+                    cobrado = true;
+                }
+
+                var precioFinal = cobrado ? precioExtra : 0;
+                extrasCobradoTotal += precioFinal;
+                extrasSnapshot.Add(new ExtraSnapshot(extra.Id, extra.Nombre, precioExtra, cobrado));
+            }
+
+            var precioFinalUnitario = precioUnitario;
+            if (d.MediaMedia?.Sabor2Id is { } sab2 && prodMap.TryGetValue(sab2, out var prodSab2))
+                precioFinalUnitario = Math.Max(precioFinalUnitario, prodSab2.Precio);
+
+            // Aderezos gratis hasta maxAderezosGratis de la categoría.
+            var aderezosCobrado = 0.0;
+            var aderezosLinea = d.AderezosIds ?? Array.Empty<string>();
+            if (aderezosLinea.Count > 0)
+            {
+                var maxGratis = categoriaId is null
+                    ? DefaultMaxAderezosGratis
+                    : await _db.Categoria.AsNoTracking().Where(c => c.Id == categoriaId).Select(c => (int?)c.MaxAderezosGratis).FirstOrDefaultAsync(ct) ?? DefaultMaxAderezosGratis;
+                var gratisCount = 0;
+                foreach (var adeId in aderezosLinea)
+                {
+                    if (!aderezoMap.TryGetValue(adeId, out var ade)) continue;
+                    if (ade.EsPremium) aderezosCobrado += ade.Precio;
+                    else if (gratisCount >= maxGratis) aderezosCobrado += ade.Precio;
+                    else gratisCount++;
+                }
+                foreach (var adeId in aderezosLinea) aderezosADescontar.Add((adeId, cantidad, categoriaId));
+            }
+
+            var subtotal = precioFinalUnitario * cantidad + extrasCobradoTotal + aderezosCobrado;
+            totalNuevosItems += subtotal;
+            subtotalPorProducto[d.ProductoId] = subtotalPorProducto.GetValueOrDefault(d.ProductoId) + subtotal;
+
+            lineas.Add(new LineaCalc(
+                d.ProductoId, prod.Nombre, cantidad, precioFinalUnitario, subtotal, extrasSnapshot, aderezosLinea));
+        }
+
+        return new LineasCalculadas(lineas, totalNuevosItems, subtotalPorProducto, extrasADescontar, aderezosADescontar);
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -622,7 +735,12 @@ public sealed class PedidoService : IPedidoService
         _db.Insumos.AsNoTracking().Where(i => i.Id == insumoId).Select(i => i.StockActual).FirstOrDefaultAsync(ct);
 
     // ── Resolución de código de descuento (validación + tope 50% + consumo atómico) ──
-    private async Task<(double Descuento, string? CodigoId)> ResolverCodigoAsync(
+    /// <summary>
+    /// Valida y calcula el descuento de un código (incluido el tope combinado del 50%) SIN consumir uso ni
+    /// tocar la DB de escritura. Devuelve el descuento y el código validado. Compartido por el path de
+    /// creación (<see cref="ResolverCodigoAsync"/>, que además consume) y por la cotización (read-only).
+    /// </summary>
+    private async Task<(double Descuento, CodigoInfo? Codigo)> CalcularDescuentoCodigoAsync(
         string? codigoDescuento, string negocioId, double totalNuevosItems, double descuentoOfertas,
         IReadOnlyDictionary<string, double> subtotalPorProducto, CancellationToken ct)
     {
@@ -660,6 +778,17 @@ public sealed class PedidoService : IPedidoService
             }
         }
         if (descuento <= 0) return (0, null);
+
+        return (descuento, codigo);
+    }
+
+    private async Task<(double Descuento, string? CodigoId)> ResolverCodigoAsync(
+        string? codigoDescuento, string negocioId, double totalNuevosItems, double descuentoOfertas,
+        IReadOnlyDictionary<string, double> subtotalPorProducto, CancellationToken ct)
+    {
+        var (descuento, codigo) = await CalcularDescuentoCodigoAsync(
+            codigoDescuento, negocioId, totalNuevosItems, descuentoOfertas, subtotalPorProducto, ct);
+        if (descuento <= 0 || codigo is null) return (0, null);
 
         // Consumo atómico race-safe (solo si aplica descuento real).
         if (codigo.UsosMaximos is { } max)
@@ -902,6 +1031,15 @@ public sealed class PedidoService : IPedidoService
     // ── Tipos internos de carga ──
     private sealed record RecetaItem(string InsumoId, double Cantidad);
     private sealed record ProductoData(string Id, double Precio, bool Activo, string Nombre, string? CategoriaId, List<RecetaItem> Receta);
+
+    // Resultado del pricing por línea (sin efectos): lo consumen CrearPedidoAsync (arma entidades) y CotizarPedidoAsync.
+    private sealed record LineaCalc(
+        string ProductoId, string NombreProducto, int Cantidad, double PrecioUnitario, double Subtotal,
+        IReadOnlyList<ExtraSnapshot> Extras, IReadOnlyList<string> AderezosIds);
+    private sealed record LineasCalculadas(
+        IReadOnlyList<LineaCalc> Lineas, double TotalNuevosItems, Dictionary<string, double> SubtotalPorProducto,
+        List<(string ExtraId, int Cantidad, string? CategoriaId)> ExtrasADescontar,
+        List<(string AderezoId, int Cantidad, string? CategoriaId)> AderezosADescontar);
     private sealed record CategoriaValor(string CategoriaId, double Valor);
     private sealed record ToppingGrupoData(int MaxExtrasGratis, bool EsIncluido);
     private sealed record ExtraData(

@@ -50,6 +50,35 @@ public sealed record CrearPedidoInput(
 /// <summary>Snapshot de un extra que se serializa en la columna jsonb <c>PedidoDetalle.Extras</c>.</summary>
 public sealed record ExtraSnapshot(string Id, string Nombre, double Precio, bool Cobrado);
 
+// ── Cotización (preview de precio autoritativo, sin persistencia ni stock) ──
+
+public sealed record CotizacionExtra(string Nombre, bool Cobrado, double Precio);
+
+public sealed record CotizacionAderezo(string Nombre);
+
+public sealed record CotizacionLinea(
+    string ProductoId,
+    string? NombreProducto,
+    int Cantidad,
+    double PrecioUnitario,
+    IReadOnlyList<CotizacionExtra> Extras,
+    IReadOnlyList<CotizacionAderezo> Aderezos,
+    double Subtotal);
+
+public sealed record CotizacionOfertaAplicada(string Nombre, string Tipo);
+
+public sealed record CotizacionCodigoAplicado(string Codigo, double Descuento);
+
+/// <summary>Precio autoritativo de un carrito calculado por el backend (mismo pricing que la creación).</summary>
+public sealed record CotizacionResult(
+    IReadOnlyList<CotizacionLinea> Lineas,
+    double Subtotal,
+    double DescuentoOferta,
+    double DescuentoCodigo,
+    double Total,
+    CotizacionOfertaAplicada? OfertaAplicada,
+    CotizacionCodigoAplicado? CodigoAplicado);
+
 /// <summary>
 /// Excepción de dominio del flujo de pedidos. El controller la mapea a la respuesta HTTP
 /// correspondiente (<see cref="StatusCode"/> 400/404), replicando los <c>BadRequestException</c> /
@@ -75,6 +104,13 @@ public interface IPedidoService
 {
     /// <summary>Crea (o agrega ítems a) un pedido. Devuelve el id del pedido creado/actualizado.</summary>
     Task<string> CrearPedidoAsync(CrearPedidoInput input, string negocioId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Cotiza un carrito y devuelve el precio autoritativo (líneas, extras cobrados, aderezos, ofertas y
+    /// código) reutilizando el mismo pricing que <see cref="CrearPedidoAsync"/>, pero SIN persistir nada,
+    /// descontar stock, crear cliente, ocupar mesa ni consumir usos de ofertas/códigos.
+    /// </summary>
+    Task<CotizacionResult> CotizarPedidoAsync(CrearPedidoInput input, string negocioId, CancellationToken cancellationToken = default);
 
     /// <summary>Cancela un pedido y revierte el stock consumido. <paramref name="canceladoPor"/> viene del claim del actor.</summary>
     Task CancelarPedidoAsync(string pedidoId, string motivo, Role canceladoPor, string negocioId, CancellationToken cancellationToken = default);
