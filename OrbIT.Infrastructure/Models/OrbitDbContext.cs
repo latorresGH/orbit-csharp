@@ -301,6 +301,9 @@ public partial class OrbitDbContext : DbContext
 
             entity.HasIndex(e => new { e.NegocioId, e.CreatedAt }, "CajaMovimiento_negocioId_createdAt_idx");
 
+            // Cierre de turno / reportes de caja filtran por FechaConfirmacion (no CreatedAt): índice dedicado.
+            entity.HasIndex(e => new { e.NegocioId, e.FechaConfirmacion }, "CajaMovimiento_negocioId_fechaConfirmacion_idx");
+
             entity.HasIndex(e => e.NegocioId, "CajaMovimiento_negocioId_idx");
 
             entity.HasIndex(e => e.PedidoId, "CajaMovimiento_pedidoId_idx");

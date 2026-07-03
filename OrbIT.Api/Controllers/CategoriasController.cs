@@ -32,22 +32,27 @@ public sealed class CategoriasController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
-        // El query filter ya limita al negocio activo; sólo definimos el orden de salida.
-        var categorias = await _db.Categoria
+        // El query filter ya limita al negocio activo; sólo definimos el orden de salida. Projection directa
+        // al DTO en SQL (AsNoTracking + Select): no materializamos la entidad ni tocamos el change tracker.
+        var categorias = await _db.Categoria.AsNoTracking()
             .OrderBy(c => c.Orden)
             .ThenBy(c => c.Nombre)
+            .Select(Projection)
             .ToListAsync();
 
-        return Ok(categorias.Select(ToResponse));
+        return Ok(categorias);
     }
 
     [HttpGet("{id}", Name = nameof(GetCategoriaById))]
     public async Task<IActionResult> GetCategoriaById(string id)
     {
-        // FirstOrDefaultAsync (no FindAsync) para que el query filter multi-tenant se aplique:
-        // FindAsync puede resolver desde la caché del contexto y saltearse el filtro por negocio.
-        var categoria = await _db.Categoria.FirstOrDefaultAsync(c => c.Id == id);
-        return categoria is null ? NotFound() : Ok(ToResponse(categoria));
+        // Where + query filter multi-tenant (no FindAsync, que puede resolver de caché y saltearse el filtro).
+        // Projection directa al DTO en SQL.
+        var categoria = await _db.Categoria.AsNoTracking()
+            .Where(c => c.Id == id)
+            .Select(Projection)
+            .FirstOrDefaultAsync();
+        return categoria is null ? NotFound() : Ok(categoria);
     }
 
     [HttpPost]
@@ -208,6 +213,17 @@ public sealed class CategoriasController : ControllerBase
         ex.InnerException is PostgresException { SqlState: UniqueViolation };
 
     private static CategoriaResponse ToResponse(Categorium c) => new(
+        c.Id,
+        c.Nombre,
+        c.Descripcion,
+        c.Activo,
+        c.Orden,
+        c.MaxAderezosGratis,
+        c.CreatedAt,
+        c.UpdatedAt);
+
+    // Misma forma que ToResponse pero como Expression, para que EF la traduzca a SQL en los reads (projection).
+    private static readonly System.Linq.Expressions.Expression<Func<Categorium, CategoriaResponse>> Projection = c => new CategoriaResponse(
         c.Id,
         c.Nombre,
         c.Descripcion,

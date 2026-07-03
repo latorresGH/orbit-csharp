@@ -163,7 +163,8 @@ public sealed class MesasController : ControllerBase
             Id = Guid.NewGuid().ToString(),
             Numero = request.Numero,
             Nombre = TrimOrNull(request.Nombre),
-            NegocioId = negocioId,
+            NegocioId = negocioId!, // no-null garantizado: GuardMesasAsync devuelve error no-null si falta el tenant.
+
             CreatedAt = now,
             UpdatedAt = now,
         };

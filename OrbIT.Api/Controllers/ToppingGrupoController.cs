@@ -33,22 +33,27 @@ public sealed class ToppingGrupoController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetAll()
     {
-        // El query filter ya limita al negocio activo; sólo definimos el orden de salida.
-        var grupos = await _db.ToppingGrupos
+        // El query filter ya limita al negocio activo; sólo definimos el orden de salida. Projection directa
+        // al DTO en SQL (AsNoTracking + Select): no materializamos la entidad ni tocamos el change tracker.
+        var grupos = await _db.ToppingGrupos.AsNoTracking()
             .OrderBy(g => g.Orden)
             .ThenBy(g => g.Nombre)
+            .Select(Projection)
             .ToListAsync();
 
-        return Ok(grupos.Select(ToResponse));
+        return Ok(grupos);
     }
 
     [HttpGet("{id}", Name = nameof(GetToppingGrupoById))]
     public async Task<IActionResult> GetToppingGrupoById(string id)
     {
-        // FirstOrDefaultAsync (no FindAsync) para que el query filter multi-tenant se aplique:
-        // FindAsync puede resolver desde la caché del contexto y saltearse el filtro por negocio.
-        var grupo = await _db.ToppingGrupos.FirstOrDefaultAsync(g => g.Id == id);
-        return grupo is null ? NotFound() : Ok(ToResponse(grupo));
+        // Where + query filter multi-tenant (no FindAsync, que puede resolver de caché y saltearse el filtro).
+        // Projection directa al DTO en SQL.
+        var grupo = await _db.ToppingGrupos.AsNoTracking()
+            .Where(g => g.Id == id)
+            .Select(Projection)
+            .FirstOrDefaultAsync();
+        return grupo is null ? NotFound() : Ok(grupo);
     }
 
     [HttpPost]
@@ -129,6 +134,15 @@ public sealed class ToppingGrupoController : ControllerBase
     }
 
     private static ToppingGrupoResponse ToResponse(ToppingGrupo g) => new(
+        g.Id,
+        g.Nombre,
+        g.MaxExtrasGratis,
+        g.EsIncluido,
+        g.Orden,
+        g.Activo);
+
+    // Misma forma que ToResponse pero como Expression, para que EF la traduzca a SQL en los reads (projection).
+    private static readonly System.Linq.Expressions.Expression<Func<ToppingGrupo, ToppingGrupoResponse>> Projection = g => new ToppingGrupoResponse(
         g.Id,
         g.Nombre,
         g.MaxExtrasGratis,

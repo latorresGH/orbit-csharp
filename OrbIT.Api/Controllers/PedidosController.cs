@@ -127,15 +127,41 @@ public sealed class PedidosController : ControllerBase
         [FromQuery] EstadoPedido? estado = null,
         [FromQuery] TipoPedido? tipo = null,
         [FromQuery] string? desde = null,
-        [FromQuery] string? hasta = null)
+        [FromQuery] string? hasta = null,
+        [FromQuery] int? page = null,
+        [FromQuery] int? limit = null)
     {
+        var pageNum = page is > 0 ? page.Value : 1;
+        var lim = Math.Clamp(limit ?? 50, 1, 200);
+
         var query = PedidosConGrafo();
         if (estado is { } e) query = query.Where(p => p.Estado == e);
         if (tipo is { } t) query = query.Where(p => p.Tipo == t);
-        if (TryParseDesde(desde, out var d)) query = query.Where(p => p.CreatedAt >= d);
-        if (TryParseHasta(hasta, out var h)) query = query.Where(p => p.CreatedAt <= h);
 
-        var pedidos = await query.OrderByDescending(p => p.CreatedAt).ToListAsync();
+        // Ventana por defecto = HOY (AR -03:00) cuando no se especifica ninguna fecha: el POS normalmente sólo
+        // necesita los pedidos del día actual. Si vienen desde/hasta explícitos se respetan (cada uno opcional,
+        // AR-aware con el helper único ArgentinaClock, igual que Historial/Reporte).
+        if (string.IsNullOrWhiteSpace(desde) && string.IsNullOrWhiteSpace(hasta))
+        {
+            var hoy = ArgentinaClock.Now().Date;
+            var desdeHoy = ArgentinaClock.ToUtc(hoy);
+            var hastaHoy = ArgentinaClock.ToUtc(hoy.AddDays(1).AddTicks(-1));
+            query = query.Where(p => p.CreatedAt >= desdeHoy && p.CreatedAt <= hastaHoy);
+        }
+        else
+        {
+            if (ArgentinaClock.DesdeArUtc(desde) is { } d) query = query.Where(p => p.CreatedAt >= d);
+            if (ArgentinaClock.HastaArUtc(hasta) is { } h) query = query.Where(p => p.CreatedAt <= h);
+        }
+
+        // Orden determinista (CreatedAt no es único → tiebreak por Id) para que la paginación y el split query
+        // sean estables.
+        var pedidos = await query
+            .OrderByDescending(p => p.CreatedAt)
+            .ThenByDescending(p => p.Id)
+            .Skip((pageNum - 1) * lim)
+            .Take(lim)
+            .ToListAsync();
         return Ok(pedidos.Select(MapPedido));
     }
 
@@ -677,8 +703,13 @@ public sealed class PedidosController : ControllerBase
     // Helpers
     // ═════════════════════════════════════════════════════════════════════════
 
+    // AsSplitQuery: el grafo tiene dos niveles de colección (PedidoDetalles y, dentro, la M:N As) → un único
+    // JOIN produce producto cartesiano (filas duplicadas que EF deduplica en memoria). Split emite una query
+    // por colección y corta esa explosión. Lo consumen Listar, DeliveryPendientes, CuentasAbiertas y el
+    // loader de un pedido por id.
     private IQueryable<Pedido> PedidosConGrafo() =>
         _db.Pedidos.AsNoTracking()
+            .AsSplitQuery()
             .Include(p => p.PedidoDetalles).ThenInclude(d => d.Producto)
             .Include(p => p.PedidoDetalles).ThenInclude(d => d.As)
             .Include(p => p.PedidoDetalles).ThenInclude(d => d.PizzaMediaMedium);
@@ -776,28 +807,6 @@ public sealed class PedidosController : ControllerBase
     /// <summary>Escapa los comodines de LIKE/ILIKE (<c>\ % _</c>) para tratar la búsqueda como substring literal.</summary>
     private static string EscapeLike(string value) =>
         value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
-
-    private static bool TryParseDesde(string? value, out DateTime fecha)
-    {
-        if (!string.IsNullOrWhiteSpace(value) && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
-        {
-            fecha = DateTime.SpecifyKind(d.Date, DateTimeKind.Unspecified);
-            return true;
-        }
-        fecha = default;
-        return false;
-    }
-
-    private static bool TryParseHasta(string? value, out DateTime fecha)
-    {
-        if (!string.IsNullOrWhiteSpace(value) && DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
-        {
-            fecha = DateTime.SpecifyKind(d.Date.AddDays(1).AddTicks(-1), DateTimeKind.Unspecified);
-            return true;
-        }
-        fecha = default;
-        return false;
-    }
 
     private static string? TrimOrNull(string? value)
     {
