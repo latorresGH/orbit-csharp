@@ -46,6 +46,7 @@ public sealed class MesasIsolationTests : IAsyncLifetime
         await db.Database.EnsureCreatedAsync();
 
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        PlanSeed.Seed(db, now);
         SeedNegocioConAdmin(db, hasher, NegocioAId, "Negocio ME A", NegocioASlug, AdminAId, AdminAEmail, now);
         SeedNegocioConAdmin(db, hasher, NegocioBId, "Negocio ME B", NegocioBSlug, AdminBId, AdminBEmail, now);
         await db.SaveChangesAsync();
@@ -314,7 +315,8 @@ public sealed class MesasIsolationTests : IAsyncLifetime
             Nombre = negocioNombre,
             Slug = slug,
             Activo = true,
-            Plan = "basic",
+            Plan = "pro",
+            PlanId = PlanSeed.ProId, // gestión de mesas es feature Pro-only.
             CreatedAt = now,
             UpdatedAt = now,
         });

@@ -3,9 +3,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using OrbIT.Api.Billing;
 using OrbIT.Api.Contracts.Ofertas;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Ofertas;
+using OrbIT.Application.Planes;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
@@ -41,12 +43,14 @@ public sealed class OfertasController : ControllerBase
     private readonly OrbitDbContext _db;
     private readonly ITenantProvider _tenant;
     private readonly IOfertasCalculatorService _calculator;
+    private readonly IPlanGuard _planGuard;
 
-    public OfertasController(OrbitDbContext db, ITenantProvider tenant, IOfertasCalculatorService calculator)
+    public OfertasController(OrbitDbContext db, ITenantProvider tenant, IOfertasCalculatorService calculator, IPlanGuard planGuard)
     {
         _db = db;
         _tenant = tenant;
         _calculator = calculator;
+        _planGuard = planGuard;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -111,6 +115,10 @@ public sealed class OfertasController : ControllerBase
         if (string.IsNullOrEmpty(negocioId))
         {
             return Forbid();
+        }
+        if (!await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Ofertas))
+        {
+            return PlanGuardResponses.Feature();
         }
 
         if (ValidarReglasDeTipo(request.Tipo, request.PorcentajeDescuento, request.MontoDescuento,
@@ -181,6 +189,16 @@ public sealed class OfertasController : ControllerBase
     [Authorize(Roles = "ADMIN")]
     public async Task<IActionResult> Actualizar(string id, [FromBody] UpdateOfertaRequest request)
     {
+        var negocioId = _tenant.NegocioId;
+        if (string.IsNullOrEmpty(negocioId))
+        {
+            return Forbid();
+        }
+        if (!await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Ofertas))
+        {
+            return PlanGuardResponses.Feature();
+        }
+
         var oferta = await _db.Oferta.FirstOrDefaultAsync(o => o.Id == id);
         if (oferta is null)
         {

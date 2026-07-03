@@ -4,10 +4,12 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using OrbIT.Api.Billing;
 using OrbIT.Api.Contracts.Pedidos;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Common;
 using OrbIT.Application.Pedidos;
+using OrbIT.Application.Planes;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
@@ -53,13 +55,28 @@ public sealed class PedidosController : ControllerBase
     private readonly ITenantProvider _tenant;
     private readonly IPedidoService _pedidos;
     private readonly IPedidoNotificationService _notifier;
+    private readonly IPlanGuard _planGuard;
 
-    public PedidosController(OrbitDbContext db, ITenantProvider tenant, IPedidoService pedidos, IPedidoNotificationService notifier)
+    public PedidosController(OrbitDbContext db, ITenantProvider tenant, IPedidoService pedidos, IPedidoNotificationService notifier, IPlanGuard planGuard)
     {
         _db = db;
         _tenant = tenant;
         _pedidos = pedidos;
         _notifier = notifier;
+        _planGuard = planGuard;
+    }
+
+    /// <summary>Gate de plan para el reporting (feature Reportes, Pro-only). 403 si el plan no la incluye.</summary>
+    private async Task<IActionResult?> GuardReportesAsync()
+    {
+        var negocioId = _tenant.NegocioId;
+        if (string.IsNullOrEmpty(negocioId))
+        {
+            return Forbid();
+        }
+        return await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Reportes)
+            ? null
+            : PlanGuardResponses.Feature();
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -171,6 +188,11 @@ public sealed class PedidosController : ControllerBase
         [FromQuery] EstadoPedido? estado = null,
         [FromQuery] string? busqueda = null)
     {
+        if (await GuardReportesAsync() is { } guardError)
+        {
+            return guardError;
+        }
+
         var pageNum = page is > 0 ? page.Value : 1;
         var lim = Math.Clamp(limit ?? 50, 1, 200);
 
@@ -326,6 +348,11 @@ public sealed class PedidosController : ControllerBase
     [Authorize(Roles = "ADMIN")]
     public async Task<IActionResult> Reporte([FromQuery] string? desde = null, [FromQuery] string? hasta = null)
     {
+        if (await GuardReportesAsync() is { } guardError)
+        {
+            return guardError;
+        }
+
         // NestJS usaba UTC crudo acá (new Date(desde) sin offset + hasta con sufijo 'Z'), inconsistente con
         // historial/stats/cocina que usan -03:00. Casi seguro un bug: unificado a AR (-03:00) para todo Tanda B.
         var query = _db.Pedidos.AsNoTracking().Where(p => p.Estado == EstadoPedido.ENTREGADO);

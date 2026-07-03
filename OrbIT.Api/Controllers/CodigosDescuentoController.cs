@@ -3,9 +3,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using OrbIT.Api.Billing;
 using OrbIT.Api.Contracts.CodigosDescuento;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.CodigosDescuento;
+using OrbIT.Application.Planes;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
 
@@ -32,12 +34,14 @@ public sealed class CodigosDescuentoController : ControllerBase
     private readonly OrbitDbContext _db;
     private readonly ITenantProvider _tenant;
     private readonly ICodigosDescuentoService _service;
+    private readonly IPlanGuard _planGuard;
 
-    public CodigosDescuentoController(OrbitDbContext db, ITenantProvider tenant, ICodigosDescuentoService service)
+    public CodigosDescuentoController(OrbitDbContext db, ITenantProvider tenant, ICodigosDescuentoService service, IPlanGuard planGuard)
     {
         _db = db;
         _tenant = tenant;
         _service = service;
+        _planGuard = planGuard;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -97,6 +101,10 @@ public sealed class CodigosDescuentoController : ControllerBase
         if (string.IsNullOrEmpty(negocioId))
         {
             return Forbid();
+        }
+        if (!await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Ofertas))
+        {
+            return PlanGuardResponses.Feature();
         }
 
         if (!TryParseFecha(request.FechaInicio, out var fechaInicio))
@@ -162,6 +170,16 @@ public sealed class CodigosDescuentoController : ControllerBase
     [Authorize(Roles = "ADMIN")]
     public async Task<IActionResult> Update(string id, [FromBody] UpdateCodigoDescuentoRequest request)
     {
+        var negocioId = _tenant.NegocioId;
+        if (string.IsNullOrEmpty(negocioId))
+        {
+            return Forbid();
+        }
+        if (!await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Ofertas))
+        {
+            return PlanGuardResponses.Feature();
+        }
+
         var codigo = await _db.CodigoDescuentos.FirstOrDefaultAsync(c => c.Id == id);
         if (codigo is null)
         {

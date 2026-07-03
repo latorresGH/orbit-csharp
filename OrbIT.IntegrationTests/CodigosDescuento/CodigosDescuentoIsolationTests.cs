@@ -41,6 +41,7 @@ public sealed class CodigosDescuentoIsolationTests : IAsyncLifetime
         await db.Database.EnsureCreatedAsync();
 
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        PlanSeed.Seed(db, now);
         SeedNegocioConAdmin(db, hasher, NegocioAId, "Negocio CD A", NegocioASlug, "user-cd-a", AdminAEmail, now);
         SeedNegocioConAdmin(db, hasher, NegocioBId, "Negocio CD B", NegocioBSlug, "user-cd-b", AdminBEmail, now);
 
@@ -235,7 +236,8 @@ public sealed class CodigosDescuentoIsolationTests : IAsyncLifetime
             Nombre = negocioNombre,
             Slug = slug,
             Activo = true,
-            Plan = "basic",
+            Plan = "pro",
+            PlanId = PlanSeed.ProId, // códigos de descuento gatean por la feature Ofertas (Pro-only).
             CreatedAt = now,
             UpdatedAt = now,
         });

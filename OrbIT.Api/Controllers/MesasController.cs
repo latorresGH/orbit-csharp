@@ -2,8 +2,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using OrbIT.Api.Billing;
 using OrbIT.Api.Contracts.Mesas;
 using OrbIT.Api.MultiTenancy;
+using OrbIT.Application.Planes;
 using OrbIT.Domain.Enums;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
@@ -51,11 +53,31 @@ public sealed class MesasController : ControllerBase
 
     private readonly OrbitDbContext _db;
     private readonly ITenantProvider _tenant;
+    private readonly IPlanGuard _planGuard;
 
-    public MesasController(OrbitDbContext db, ITenantProvider tenant)
+    public MesasController(OrbitDbContext db, ITenantProvider tenant, IPlanGuard planGuard)
     {
         _db = db;
         _tenant = tenant;
+        _planGuard = planGuard;
+    }
+
+    /// <summary>
+    /// Gate de plan para la gestión de mesas (feature Pro-only). Devuelve el negocioId resuelto si el plan la
+    /// habilita; si no, un 403 (feature) o 403/Forbid (sin tenant) listo para retornar desde la acción.
+    /// </summary>
+    private async Task<(string? NegocioId, IActionResult? Error)> GuardMesasAsync()
+    {
+        var negocioId = _tenant.NegocioId;
+        if (string.IsNullOrEmpty(negocioId))
+        {
+            return (null, Forbid());
+        }
+        if (!await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Mesas))
+        {
+            return (null, PlanGuardResponses.Feature());
+        }
+        return (negocioId, null);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -118,10 +140,10 @@ public sealed class MesasController : ControllerBase
     [Authorize(Roles = "ADMIN")]
     public async Task<IActionResult> Create([FromBody] CreateMesaRequest request)
     {
-        var negocioId = _tenant.NegocioId;
-        if (string.IsNullOrEmpty(negocioId))
+        var (negocioId, guardError) = await GuardMesasAsync();
+        if (guardError is not null)
         {
-            return Forbid();
+            return guardError;
         }
 
         if (await _db.Mesas.AnyAsync(m => m.Numero == request.Numero))
@@ -172,6 +194,11 @@ public sealed class MesasController : ControllerBase
     [Authorize(Roles = "ADMIN")]
     public async Task<IActionResult> Update(string id, [FromBody] UpdateMesaRequest request)
     {
+        if ((await GuardMesasAsync()).Error is { } guardError)
+        {
+            return guardError;
+        }
+
         var mesa = await _db.Mesas.FirstOrDefaultAsync(m => m.Id == id);
         if (mesa is null)
         {
@@ -312,6 +339,11 @@ public sealed class MesasController : ControllerBase
     [Authorize(Roles = "ADMIN")]
     public async Task<IActionResult> Delete(string id)
     {
+        if ((await GuardMesasAsync()).Error is { } guardError)
+        {
+            return guardError;
+        }
+
         var mesa = await _db.Mesas.FirstOrDefaultAsync(m => m.Id == id);
         if (mesa is null)
         {

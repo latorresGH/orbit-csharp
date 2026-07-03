@@ -2,9 +2,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using OrbIT.Api.Billing;
 using OrbIT.Api.Contracts.Productos;
 using OrbIT.Api.MultiTenancy;
 using OrbIT.Application.Audit;
+using OrbIT.Application.Planes;
 using OrbIT.Domain.MultiTenancy;
 using OrbIT.Infrastructure.Models;
 
@@ -46,12 +48,14 @@ public sealed class ProductoController : ControllerBase
     private readonly OrbitDbContext _db;
     private readonly ITenantProvider _tenant;
     private readonly IAuditLogService _audit;
+    private readonly IPlanGuard _planGuard;
 
-    public ProductoController(OrbitDbContext db, ITenantProvider tenant, IAuditLogService audit)
+    public ProductoController(OrbitDbContext db, ITenantProvider tenant, IAuditLogService audit, IPlanGuard planGuard)
     {
         _db = db;
         _tenant = tenant;
         _audit = audit;
+        _planGuard = planGuard;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -152,6 +156,18 @@ public sealed class ProductoController : ControllerBase
         if (string.IsNullOrEmpty(negocioId))
         {
             return Forbid();
+        }
+
+        // Plan: límite de productos (Básico 30 / Pro ilimitado) e imágenes (feature Pro-only).
+        var limite = await _planGuard.VerificarLimiteProductosAsync(negocioId);
+        if (!limite.Permitido)
+        {
+            return PlanGuardResponses.LimiteProductos(limite.Limite);
+        }
+        if (NullIfBlank(request.ImagenUrl) is not null
+            && !await _planGuard.VerificarFeatureAsync(negocioId, PlanFeature.Imagenes))
+        {
+            return PlanGuardResponses.Feature();
         }
 
         var nombre = request.Nombre.Trim();

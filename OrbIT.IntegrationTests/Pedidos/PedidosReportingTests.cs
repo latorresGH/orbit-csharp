@@ -40,7 +40,8 @@ public sealed class PedidosReportingTests : IAsyncLifetime
         // Mediodía UTC de una fecha fija: seguro dentro del mismo día AR sin importar el offset -03:00.
         var baseTs = DateTime.SpecifyKind(new DateTime(2026, 6, 15, 15, 0, 0), DateTimeKind.Unspecified);
 
-        db.Negocios.Add(new Negocio { Id = NegocioId, Nombre = "Negocio Rep", Slug = NegocioSlug, Activo = true, Plan = "basic", CreatedAt = now, UpdatedAt = now });
+        PlanSeed.Seed(db, now);
+        db.Negocios.Add(new Negocio { Id = NegocioId, Nombre = "Negocio Rep", Slug = NegocioSlug, Activo = true, Plan = "pro", PlanId = PlanSeed.ProId, CreatedAt = now, UpdatedAt = now });
         db.Users.Add(new User { Id = "user-rep-admin", Email = AdminEmail, Password = hasher.Hash(Password), Nombre = "Admin", Role = Role.ADMIN, Activo = true, NegocioId = NegocioId, EmailVerificado = true, CreatedAt = now });
         db.Users.Add(new User { Id = RepartidorId, Email = "delivery-rep@pe.test", Password = hasher.Hash(Password), Nombre = "Pedro Repartidor", Role = Role.DELIVERY, Activo = true, NegocioId = NegocioId, EmailVerificado = true, CreatedAt = now });
         db.Productos.Add(new Producto { Id = ProdId, Nombre = "Pizza", Precio = 1000, Activo = true, NegocioId = NegocioId });

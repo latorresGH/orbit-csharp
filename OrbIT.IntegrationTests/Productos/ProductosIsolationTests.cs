@@ -49,6 +49,7 @@ public sealed class ProductosIsolationTests : IAsyncLifetime
         await db.Database.EnsureCreatedAsync();
 
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        PlanSeed.Seed(db, now);
         SeedNegocio(db, hasher, NegocioAId, "Negocio PR A", NegocioASlug, AdminAId, AdminAEmail, CategoriaAId, now);
         SeedNegocio(db, hasher, NegocioBId, "Negocio PR B", NegocioBSlug, AdminBId, AdminBEmail, CategoriaBId, now);
 
@@ -333,7 +334,7 @@ public sealed class ProductosIsolationTests : IAsyncLifetime
         db.Negocios.Add(new Negocio
         {
             Id = negocioId, Nombre = negocioNombre, Slug = slug, Activo = true,
-            Plan = "basic", CreatedAt = now, UpdatedAt = now,
+            Plan = "basic", PlanId = PlanSeed.BasicId, CreatedAt = now, UpdatedAt = now,
         });
         db.Users.Add(new User
         {

@@ -43,6 +43,7 @@ public sealed class OfertasIsolationTests : IAsyncLifetime
         await db.Database.EnsureCreatedAsync();
 
         var now = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
+        PlanSeed.Seed(db, now);
         SeedNegocioConAdmin(db, hasher, NegocioAId, "Negocio OF A", NegocioASlug, "user-of-a", AdminAEmail, now);
         SeedNegocioConAdmin(db, hasher, NegocioBId, "Negocio OF B", NegocioBSlug, "user-of-b", AdminBEmail, now);
 
@@ -313,7 +314,8 @@ public sealed class OfertasIsolationTests : IAsyncLifetime
             Nombre = negocioNombre,
             Slug = slug,
             Activo = true,
-            Plan = "basic",
+            Plan = "pro",
+            PlanId = PlanSeed.ProId, // ofertas es feature Pro-only.
             CreatedAt = now,
             UpdatedAt = now,
         });
