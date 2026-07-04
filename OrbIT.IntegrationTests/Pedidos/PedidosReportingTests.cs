@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Pedidos;
 
 /// <summary>
@@ -221,11 +223,16 @@ public sealed class PedidosReportingTests : IAsyncLifetime
     // ── DTOs de respuesta ─────────────────────────────────────────────────────────────────────
 
     private sealed record HistorialResult(List<HistorialItem> Data, int Total, int Page, int TotalPages);
-    private sealed record HistorialItem(string Id, EstadoPedido Estado, double Total);
+    private sealed record HistorialItem(
+        string Id,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPedido Estado,
+        double Total);
 
     private sealed record StatsResult(List<HoraItem> PorHora, List<TipoItem> PorTipo, List<MotivoItem> Cancelaciones, List<RepItem> Repartidores);
     private sealed record HoraItem(int Hora, int Count);
-    private sealed record TipoItem(TipoPedido Tipo, int Count);
+    private sealed record TipoItem(
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] TipoPedido Tipo,
+        int Count);
     private sealed record MotivoItem(string Motivo, int Count);
     private sealed record RepItem(string Nombre, int Count);
 

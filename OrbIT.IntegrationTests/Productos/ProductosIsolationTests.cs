@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Productos;
 
 /// <summary>
@@ -369,5 +371,7 @@ public sealed class ProductosIsolationTests : IAsyncLifetime
 
     private sealed record RecetaItemDto(string InsumoId, double Cantidad, InsumoRefDto Insumo);
 
-    private sealed record InsumoRefDto(string Id, string Nombre, UnidadMedida UnidadMedida);
+    private sealed record InsumoRefDto(
+        string Id, string Nombre,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] UnidadMedida UnidadMedida);
 }

@@ -6,6 +6,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Insumos;
 
 /// <summary>
@@ -346,7 +348,10 @@ public sealed class InsumosTandaBTests : IAsyncLifetime
 
     private sealed record DisponibilidadDto(string Id, string Nombre, string Tipo, double StockActual, double ConsumoPorUnidad, int Disponible);
 
-    private sealed record ReporteConsumoDto(string InsumoId, string Nombre, UnidadMedida? UnidadMedida, double TotalConsumido, int CantidadMovimientos);
+    private sealed record ReporteConsumoDto(
+        string InsumoId, string Nombre,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] UnidadMedida? UnidadMedida,
+        double TotalConsumido, int CantidadMovimientos);
 
     private sealed record PagedMovDto(List<MovUnificadoDto> Data, int Total, int Page, int TotalPages);
 

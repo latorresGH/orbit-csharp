@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Caja;
 
 /// <summary>
@@ -247,7 +249,9 @@ public sealed class CajaIsolationTests : IAsyncLifetime
     private static DateTime Now() => DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Unspecified);
 
     private sealed record MovimientoDto(
-        string Id, string? PedidoId, TipoMovimientoCaja Tipo, double MontoTotal, double GananciaNegocio,
+        string Id, string? PedidoId,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] TipoMovimientoCaja Tipo,
+        double MontoTotal, double GananciaNegocio,
         double GananciaRepartidor, string? Descripcion, string? ConfirmadoPor, DateTime? FechaConfirmacion,
         bool Anulado, DateTime CreatedAt);
 
@@ -256,7 +260,10 @@ public sealed class CajaIsolationTests : IAsyncLifetime
 
     private sealed record ResumenResponse(ResumenDto Resumen, List<MovimientoDto> Movimientos, int Total, int Page, int TotalPages);
 
-    private sealed record PendienteDto(string Id, string? NombreCliente, double Total, TipoPedido Tipo, EstadoPedido Estado);
+    private sealed record PendienteDto(
+        string Id, string? NombreCliente, double Total,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] TipoPedido Tipo,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPedido Estado);
 
     private sealed record CuentasResumen(int Cantidad, double Total);
 }

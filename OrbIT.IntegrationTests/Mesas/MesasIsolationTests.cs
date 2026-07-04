@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Mesas;
 
 /// <summary>
@@ -338,14 +340,17 @@ public sealed class MesasIsolationTests : IAsyncLifetime
         string Id,
         int Numero,
         string? Nombre,
-        EstadoMesa Estado,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoMesa Estado,
         int Capacidad,
         bool Activa,
         int PosX,
         int PosY,
         string? PedidoActivoId);
 
-    private sealed record MesaTableroDto(string Id, int Numero, EstadoMesa Estado, bool Activa, PedidoActivoResumenDto? PedidoActivo);
+    private sealed record MesaTableroDto(
+        string Id, int Numero,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoMesa Estado,
+        bool Activa, PedidoActivoResumenDto? PedidoActivo);
 
     private sealed record PedidoActivoResumenDto(string Id, double Total, int CantidadItems);
 

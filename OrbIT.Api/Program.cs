@@ -31,7 +31,14 @@ using OrbIT.Infrastructure.Models;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.Converters.Add(
+            new System.Text.Json.Serialization.JsonStringEnumConverter());
+        options.JsonSerializerOptions.PropertyNamingPolicy =
+            System.Text.Json.JsonNamingPolicy.CamelCase;
+    });
 
 // ── CORS ──────────────────────────────────────────────────────────────────
 // No había política de CORS en el proyecto. La agrego modelada en la del gateway NestJS (FRONTEND_URL +

@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Ofertas;
 
 /// <summary>
@@ -333,7 +335,10 @@ public sealed class OfertasIsolationTests : IAsyncLifetime
         });
     }
 
-    private sealed record OfertaDto(string Id, string Nombre, TipoOferta Tipo, bool Activa);
+    private sealed record OfertaDto(
+        string Id, string Nombre,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] TipoOferta Tipo,
+        bool Activa);
 
     private sealed record CalcResultDto(double Subtotal, double Descuento, double Total, List<OfertaAplicadaDto> OfertasAplicadas);
 

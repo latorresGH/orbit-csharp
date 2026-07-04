@@ -6,6 +6,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Clientes;
 
 /// <summary>
@@ -325,7 +327,10 @@ public sealed class ClientesIsolationTests : IAsyncLifetime
         string Nombre,
         List<PedidoPreviewDto> PedidosRecientes);
 
-    private sealed record PedidoPreviewDto(string Id, EstadoPedido Estado, double Total, string? Direccion);
+    private sealed record PedidoPreviewDto(
+        string Id,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPedido Estado,
+        double Total, string? Direccion);
 
     private sealed record ClientesPageDto(List<ClienteDto> Data, int Total);
 

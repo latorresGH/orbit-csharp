@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Dashboard;
 
 /// <summary>
@@ -380,8 +382,12 @@ public sealed class DashboardTests : IAsyncLifetime
     private sealed record DiaDto(string Fecha, int Pedidos, double Total);
     private sealed record HoraDto(int Hora, int Pedidos, double Total);
     private sealed record ProductoDto(string Nombre, int Cantidad, double Total);
-    private sealed record TipoDto(TipoPedido Tipo, int Cantidad, double Total);
-    private sealed record EstadoConteoDto(EstadoPedido Estado, int Count);
+    private sealed record TipoDto(
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] TipoPedido Tipo,
+        int Cantidad, double Total);
+    private sealed record EstadoConteoDto(
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPedido Estado,
+        int Count);
 
     private sealed record ResumenHoyDto(
         List<EstadoConteoDto> PedidosActivos, int PedidosActivosTotal, double FacturadoHoy,

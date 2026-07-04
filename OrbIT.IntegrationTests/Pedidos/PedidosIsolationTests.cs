@@ -7,6 +7,8 @@ using OrbIT.Application.Auth;
 using OrbIT.Domain.Enums;
 using OrbIT.Infrastructure.Models;
 
+using System.Text.Json.Serialization;
+
 namespace OrbIT.IntegrationTests.Pedidos;
 
 /// <summary>
@@ -374,7 +376,9 @@ public sealed class PedidosIsolationTests : IAsyncLifetime
     }
 
     private sealed record PedidoDto(
-        string Id, double Total, EstadoPedido Estado, EstadoPago EstadoPago,
+        string Id, double Total,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPedido Estado,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPago EstadoPago,
         string? ClienteId, string? MesaId, bool CuentaAbierta, List<DetalleDto> Detalles);
 
     private sealed record DetalleDto(string Id, double Subtotal, List<ExtraDto> Extras, List<AderezoDto> Aderezos);
@@ -383,7 +387,10 @@ public sealed class PedidosIsolationTests : IAsyncLifetime
 
     private sealed record AderezoDto(string Id, string Nombre);
 
-    private sealed record TrackingDto(string Id, EstadoPedido Estado, double Total, string? NombreCliente, string? Direccion);
+    private sealed record TrackingDto(
+        string Id,
+        [property: JsonConverter(typeof(JsonStringEnumConverter))] EstadoPedido Estado,
+        double Total, string? NombreCliente, string? Direccion);
 
     private sealed record CotizacionDto(
         List<CotLineaDto> Lineas, double Subtotal, double DescuentoOferta, double DescuentoCodigo, double Total);
