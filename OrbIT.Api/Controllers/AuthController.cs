@@ -190,12 +190,25 @@ public sealed class AuthController : ControllerBase
 
     [HttpGet("me")]
     [Authorize]
-    public IActionResult Me() => Ok(new
+    public async Task<IActionResult> Me()
     {
-        sub = User.FindFirst("sub")?.Value,
-        role = User.FindFirst("role")?.Value,
-        negocioId = User.FindFirst("negocioId")?.Value,
-    });
+        var userId = User.FindFirst("sub")?.Value;
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized(CredencialesInvalidas);
+        }
+
+        // IgnoreQueryFilters: el SUPERADMIN no tiene negocioId, así que el filtro
+        // por tenant lo dejaría fuera. AsNoTracking: es solo lectura.
+        var user = await _db.Users.IgnoreQueryFilters().AsNoTracking()
+            .FirstOrDefaultAsync(u => u.Id == userId);
+        if (user is null)
+        {
+            return Unauthorized(CredencialesInvalidas);
+        }
+
+        return Ok(UserPayload(user));
+    }
 
     // ═════════════════════════════════════════════════════════════════════════
     // Google OAuth

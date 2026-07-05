@@ -96,7 +96,9 @@ public sealed class AuthFlowIntegrationTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, meResponse.StatusCode);
         var me = await meResponse.Content.ReadFromJsonAsync<MeResponse>();
         Assert.NotNull(me);
-        Assert.Equal(UserId, me!.Sub);
+        Assert.Equal(UserId, me!.Id);
+        Assert.Equal(Email, me.Email);
+        Assert.Equal("Admin Auth", me.Nombre);
         Assert.Equal("ADMIN", me.Role);
         Assert.Equal(NegocioId, me.NegocioId);
 
@@ -138,5 +140,5 @@ public sealed class AuthFlowIntegrationTests : IAsyncLifetime
         return scope;
     }
 
-    private sealed record MeResponse(string Sub, string Role, string? NegocioId);
+    private sealed record MeResponse(string Id, string Email, string Nombre, string Role, string? NegocioId);
 }
