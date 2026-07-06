@@ -346,6 +346,10 @@ app.UseHttpsRedirection();
 
 app.UseRateLimiter();
 
+// WebSockets antes de CORS y del ruteo del hub: habilita el transporte WebSocket de SignalR (sin este
+// middleware el handshake negocia 200 pero el WS nunca abre en varios hosts/proxies).
+app.UseWebSockets();
+
 // CORS antes de auth y del ruteo del hub: el preflight/handshake de SignalR necesita los headers de CORS
 // resueltos con AllowCredentials para que el navegador mande la cookie access_token en el WebSocket.
 app.UseCors(CorsPolicy);
@@ -354,7 +358,13 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-app.MapHub<PedidosHub>("/hubs/pedidos");
+// Transportes explícitos: WebSockets como preferido y LongPolling como fallback determinista.
+app.MapHub<PedidosHub>("/hubs/pedidos", options =>
+{
+    options.Transports =
+        Microsoft.AspNetCore.Http.Connections.HttpTransportType.WebSockets |
+        Microsoft.AspNetCore.Http.Connections.HttpTransportType.LongPolling;
+});
 
 app.Run();
 
