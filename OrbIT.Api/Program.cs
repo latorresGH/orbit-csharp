@@ -202,6 +202,18 @@ var googleSettings = builder.Configuration.GetSection(GoogleSettings.SectionName
 // cada hora en un scope propio; el exchange ya ignora expirados/usados, esto sólo evita filas muertas.
 builder.Services.AddHostedService<TempTokenCleanupService>();
 
+// Endpoints que siguen respondiendo aunque el trial del negocio esté vencido, para que el ADMIN pueda ver su
+// estado y pagar/renovar (usado por el gate de trial en OnTokenValidated). Match por segmento de ruta, así
+// cubre variantes con sufijo (ej. /billing/checkout/{planSlug}). La autorización por rol se aplica aparte.
+static bool EsEndpointExentoTrial(PathString path) =>
+    path.StartsWithSegments("/auth/me")
+    || path.StartsWithSegments("/auth/logout")
+    || path.StartsWithSegments("/negocio/mi-estado")
+    || path.StartsWithSegments("/negocio/mi-perfil")
+    || path.StartsWithSegments("/billing/mi-suscripcion")
+    || path.StartsWithSegments("/billing/checkout")
+    || path.StartsWithSegments("/planes");
+
 var authBuilder = builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -238,7 +250,9 @@ var authBuilder = builder.Services
             },
 
             // Gate por-request (réplica de jwt.strategy de NestJS): rechaza usuarios desactivados o con email
-            // sin verificar. IgnoreQueryFilters porque el tenant aún no está resuelto en este punto.
+            // sin verificar, y negocios con el trial vencido sin suscripción paga. IgnoreQueryFilters porque el
+            // tenant aún no está resuelto en este punto. Se trae, en una sola query, el estado del usuario y el
+            // del negocio (nav User.Negocio; null para SUPERADMIN).
             OnTokenValidated = async context =>
             {
                 var sub = context.Principal?.FindFirst("sub")?.Value;
@@ -251,13 +265,31 @@ var authBuilder = builder.Services
                 var db = context.HttpContext.RequestServices.GetRequiredService<OrbitDbContext>();
                 var estado = await db.Users.IgnoreQueryFilters()
                     .Where(u => u.Id == sub)
-                    .Select(u => new { u.Activo, u.EmailVerificado })
+                    .Select(u => new
+                    {
+                        u.Activo,
+                        u.EmailVerificado,
+                        NegocioTrialExpira = u.Negocio != null ? u.Negocio.TrialExpira : (DateTime?)null,
+                        NegocioPlan = u.Negocio != null ? u.Negocio.Plan : null,
+                    })
                     .FirstOrDefaultAsync();
 
                 // emailVerificado null (usuarios previos a la feature) pasa; solo false estricto bloquea.
                 if (estado is null || !estado.Activo || estado.EmailVerificado == false)
                 {
                     context.Fail("Usuario no autorizado");
+                    return;
+                }
+
+                // Trial vencido sin plan pago ("activo"): bloqueamos todo el negocio con 401, salvo los endpoints
+                // que le permiten ver su estado y pagar/renovar (ver EsEndpointExentoTrial). Así el ADMIN puede
+                // seguir entrando a /admin/perfil y /billing para renovar la suscripción.
+                if (estado.NegocioTrialExpira is { } exp
+                    && exp < DateTime.UtcNow
+                    && estado.NegocioPlan != "activo"
+                    && !EsEndpointExentoTrial(context.HttpContext.Request.Path))
+                {
+                    context.Fail("Trial expirado - renovar suscripción");
                 }
             },
         };
@@ -342,7 +374,13 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+// En Development el frontend usa http://localhost:5077 y el upgrade a WebSocket de SignalR no sigue
+// redirects: un 307 HTTPS mataría el WS aunque el negotiate (XHR) lo siga de forma transparente.
+// Por eso la redirección a HTTPS solo se aplica fuera de Development.
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseRateLimiter();
 
