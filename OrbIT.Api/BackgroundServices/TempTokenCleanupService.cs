@@ -30,13 +30,27 @@ public sealed class TempTokenCleanupService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Un barrido inmediato al arrancar (por si quedaron filas de una corrida anterior) y luego cada hora.
-        using var timer = new PeriodicTimer(Intervalo);
-        do
+        try
         {
-            await LimpiarAsync(stoppingToken);
+            // Un barrido inmediato al arrancar (por si quedaron filas de una corrida anterior) y luego cada hora.
+            using var timer = new PeriodicTimer(Intervalo);
+            do
+            {
+                await LimpiarAsync(stoppingToken);
+            }
+            while (await timer.WaitForNextTickAsync(stoppingToken));
         }
-        while (await timer.WaitForNextTickAsync(stoppingToken));
+        catch (OperationCanceledException)
+        {
+            // Shutdown normal (stoppingToken cancelado, p. ej. WaitForNextTickAsync al cerrar el host):
+            // no es un error, salimos silenciosamente.
+        }
+        catch (Exception ex)
+        {
+            // Log fatal protegido: durante el disposing del host el sink puede tirar ObjectDisposedException.
+            try { _logger.LogError(ex, "[TempTokenCleanup] Error fatal en TempTokenCleanupService."); }
+            catch (ObjectDisposedException) { }
+        }
     }
 
     private async Task LimpiarAsync(CancellationToken ct)
@@ -67,7 +81,17 @@ public sealed class TempTokenCleanupService : BackgroundService
         catch (Exception ex)
         {
             // Best-effort: una falla del barrido no debe tumbar el host; se reintenta en el próximo tick.
-            _logger.LogError(ex, "[TempTokenCleanup] Error limpiando TempTokens; se reintenta en el próximo ciclo.");
+            // El log va protegido: si el host ya se está disponiendo, el sink (p. ej. el Windows Event Log)
+            // puede tirar ObjectDisposedException desde EventLogInternal y no queremos que eso tumbe el servicio.
+            try
+            {
+                if (!ct.IsCancellationRequested)
+                    _logger.LogError(ex, "[TempTokenCleanup] Error limpiando TempTokens; se reintenta en el próximo ciclo.");
+            }
+            catch (ObjectDisposedException)
+            {
+                // El host ya se está cerrando — ignorar el error de logging.
+            }
         }
     }
 }
