@@ -40,7 +40,7 @@ public partial class OrbitDbContext
         // Negocio se filtra por su propia Id (el tenant es el propio registro de negocio).
         modelBuilder.Entity<Negocio>().HasQueryFilter(e => e.Id == _tenantProvider!.NegocioId);
 
-        // 35 entidades hijas: se filtran por su NegocioId contra el tenant activo.
+        // 36 entidades hijas: se filtran por su NegocioId contra el tenant activo.
         modelBuilder.Entity<Aderezo>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<AderezoCategorium>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<AderezoConsumo>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
@@ -68,6 +68,7 @@ public partial class OrbitDbContext
         modelBuilder.Entity<PedidoDetalle>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<PedidoOfertum>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<PizzaMediaMedium>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
+        modelBuilder.Entity<PlanoSalon>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<Producto>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<ProductoRecetum>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);
         modelBuilder.Entity<Proveedor>().HasQueryFilter(e => e.NegocioId == _tenantProvider!.NegocioId);

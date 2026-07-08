@@ -1,6 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrbIT.Domain.Enums;
 
 namespace OrbIT.Infrastructure.Models;
@@ -70,6 +73,8 @@ public partial class OrbitDbContext : DbContext
 
     public virtual DbSet<Plan> Plans { get; set; }
 
+    public virtual DbSet<PlanoSalon> PlanoSalons { get; set; }
+
     public virtual DbSet<PrismaMigration> PrismaMigrations { get; set; }
 
     public virtual DbSet<Producto> Productos { get; set; }
@@ -91,6 +96,23 @@ public partial class OrbitDbContext : DbContext
     public virtual DbSet<User> Users { get; set; }
 
     public virtual DbSet<WebhookEvent> WebhookEvents { get; set; }
+
+    // Serialización de la columna jsonb `elementos` de PlanoSalon (List<ElementoPlano> <-> texto jsonb). El
+    // ElementoPlano fija sus claves con [JsonPropertyName] (camelCase), así que las opciones por defecto ya
+    // producen el shape esperado. El ValueComparer es obligatorio para tipos de referencia mutables: sin él
+    // EF no detecta que la lista cambió (mismo objeto, contenido distinto) y el UPDATE se pierde; comparamos
+    // y snapshoteamos por serialización JSON (deep, robusto ante reordenamientos de propiedades).
+    private static readonly ValueConverter<List<ElementoPlano>, string> ElementosConverter = new(
+        v => JsonSerializer.Serialize(v ?? new List<ElementoPlano>(), (JsonSerializerOptions?)null),
+        v => string.IsNullOrEmpty(v)
+            ? new List<ElementoPlano>()
+            : JsonSerializer.Deserialize<List<ElementoPlano>>(v, (JsonSerializerOptions?)null) ?? new List<ElementoPlano>());
+
+    private static readonly ValueComparer<List<ElementoPlano>> ElementosComparer = new(
+        (a, b) => JsonSerializer.Serialize(a, (JsonSerializerOptions?)null) == JsonSerializer.Serialize(b, (JsonSerializerOptions?)null),
+        v => v == null ? 0 : JsonSerializer.Serialize(v, (JsonSerializerOptions?)null).GetHashCode(),
+        v => JsonSerializer.Deserialize<List<ElementoPlano>>(
+            JsonSerializer.Serialize(v, (JsonSerializerOptions?)null), (JsonSerializerOptions?)null) ?? new List<ElementoPlano>());
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -903,6 +925,47 @@ public partial class OrbitDbContext : DbContext
             entity.Property(e => e.TieneToppingGrupos).HasColumnName("tieneToppingGrupos");
             // Plan es una tabla GLOBAL del sistema: NO lleva Global Query Filter (a diferencia de las
             // entidades por-tenant). Se ve completa desde cualquier request. Ver OnModelCreatingPartial.
+        });
+
+        modelBuilder.Entity<PlanoSalon>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("PlanoSalon_pkey");
+
+            entity.ToTable("PlanoSalon");
+
+            // 1:1 con el negocio (índice único) + índice de lookup por tenant. Ambos replican el DDL creado
+            // a mano en orbit_csharp para que EnsureCreated (tests) genere el mismo esquema.
+            entity.HasIndex(e => e.NegocioId, "PlanoSalon_negocioId_key").IsUnique();
+            entity.HasIndex(e => e.NegocioId, "PlanoSalon_negocioId_idx");
+
+            entity.Property(e => e.Id).HasColumnName("id");
+            entity.Property(e => e.NegocioId).HasColumnName("negocioId");
+            entity.Property(e => e.Elementos)
+                .HasColumnType("jsonb")
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasConversion(ElementosConverter, ElementosComparer)
+                .HasColumnName("elementos");
+            entity.Property(e => e.CanvasWidth)
+                .HasDefaultValue(1200)
+                .HasColumnName("canvasWidth");
+            entity.Property(e => e.CanvasHeight)
+                .HasDefaultValue(800)
+                .HasColumnName("canvasHeight");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("createdAt");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnType("timestamp without time zone")
+                .HasColumnName("updatedAt");
+
+            // ON DELETE CASCADE: si se borra el negocio, su plano se va con él (paridad con el DDL). WithMany()
+            // sin navegación inversa evita agregarle una colección a Negocio; la unicidad la garantiza el índice.
+            entity.HasOne(d => d.Negocio).WithMany()
+                .HasForeignKey(d => d.NegocioId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("PlanoSalon_negocioId_fkey");
         });
 
         modelBuilder.Entity<OfertaProducto>(entity =>
